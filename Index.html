@@ -1,0 +1,2128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="TennisTag Pro" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>TennisTag Pro</title>
+
+  <!-- Splash / icon meta -->
+  <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%232d6a4f'/><text y='.9em' font-size='80' x='10'>🎾</text></svg>" />
+
+  <style>
+    /* Prevent overscroll bounce on iPad */
+    html, body {
+      margin: 0; padding: 0; height: 100%;
+      overscroll-behavior: none;
+      -webkit-overflow-scrolling: touch;
+      background: #0d1b2a;
+    }
+    #root { height: 100%; min-height: 100vh; }
+    /* Prevent text selection on tap */
+    * { -webkit-tap-highlight-color: transparent; }
+    /* Safe area insets for notched iPads */
+    #root > div {
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+    /* Loading spinner */
+    #loading {
+      position: fixed; inset: 0; background: #0d1b2a;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      color: #f4d35e; font-family: sans-serif; z-index: 99999;
+    }
+    #loading .ball { font-size: 56px; animation: spin 1.2s linear infinite; }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    #loading p { margin-top: 16px; font-size: 14px; color: #7fa8c0; letter-spacing: 2px; text-transform: uppercase; }
+  </style>
+
+  <!-- React 18 from CDN -->
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <!-- Babel standalone for JSX transform -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+</head>
+<body>
+  <div id="loading">
+    <div class="ball">🎾</div>
+    <p>Loading TennisTag Pro...</p>
+  </div>
+  <div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+// ─── GLOBAL REACT HOOKS (available to all components) ─────────────────────────
+const { useState, useCallback, useEffect, useRef } = React;
+
+
+// ─── CONSTANTS ────────────────────────────────────────────────────────────────
+const SURFACES = ["Hard", "Clay", "Grass", "Synthetic Grass", "Indoor Hard"];
+const SERVE_TYPES = ["1st Serve", "2nd Serve"];
+const SERVE_DIRS = ["Wide", "Body", "T"];
+const SERVE_FAULT_TYPES = ["Net", "Long", "Wide", "Foot Fault"];
+const RETURN_HANDS = ["Forehand", "Backhand"];
+const OUTCOMES = ["Winner", "Unforced Error", "Forced Error", "Ace", "Double Fault", "Let"];
+// Shot types grouped by category for the picker UI
+const SHOT_GROUPS = [
+  {
+    group: "Groundstrokes",
+    color: "#1a5276",
+    shots: ["Forehand", "Backhand", "Slice Forehand", "Slice Backhand"],
+  },
+  {
+    group: "Serve & Return",
+    color: "#2d6a4f",
+    shots: ["Serve", "Return Forehand", "Return Backhand"],
+  },
+  {
+    group: "Approach",
+    color: "#5b2c6f",
+    shots: ["Approach Forehand", "Approach Backhand"],
+  },
+  {
+    group: "Net",
+    color: "#0e4d6e",
+    shots: ["Volley Forehand", "Volley Backhand", "Overhead", "Half Volley"],
+  },
+  {
+    group: "Specials",
+    color: "#6e2f10",
+    shots: ["Drop Shot", "Lob", "Tweener"],
+  },
+];
+// Flat list for CSV / log references
+const SHOT_TYPES = SHOT_GROUPS.flatMap(g => g.shots);
+const RALLY_RANGES = ["0-4", "5-8", "9-12", "13+"];
+
+const FORMATS = ["1 Set", "Short Set (1st to 4)", "Best of 3 Short Sets", "Best of 3", "Best of 5"];
+
+// ─── THEMES ───────────────────────────────────────────────────────────────────
+const THEMES = {
+  original: {
+    id: "original", name: "Original", emoji: "🎾",
+    tagline: "Clean & Fast",
+    bg: "#0d1b2a", bgDeep: "#080f18", card: "#112233", card2: "#1a2f45",
+    border: "#1e3a5f", primary: "#f4d35e", primary2: "#e8c840",
+    accent: "#f4d35e", accentAlt: "#40916c", danger: "#e63946", text: "#e8f4f8",
+    textMuted: "#7fa8c0", white: "#ffffff",
+    headerBg: "linear-gradient(135deg,#2d6a4f,#1b4332)", headerBorder: "#f4d35e",
+    scoreBg: "#0a1628",
+    fontDisplay: "'DM Sans','Segoe UI',sans-serif",
+    fontBody: "'DM Sans','Segoe UI',sans-serif",
+    radius: 8, chipRadius: 8, btnRadius: 10,
+    pattern: "none", patternBg: "",
+    stepColors: ["#5abaff","#5aff9a","#5ab8ff","#5affc8","#ffaa5a","#7fa8c0","#f4d35e"],
+  },
+  egyptian: {
+    id: "egyptian", name: "Pharaonic", emoji: "𓂀",
+    tagline: "Gold of the Pharaohs",
+    bg: "#0e0a04", bgDeep: "#070503", card: "#1a1206", card2: "#241a08",
+    border: "#5a3e0a", primary: "#c8922a", primary2: "#e8b84b",
+    accent: "#d4af37", accentAlt: "#3d7a8a", danger: "#8b1a1a", text: "#f0e6c8",
+    textMuted: "#8a7040", white: "#faf0d8",
+    headerBg: "linear-gradient(135deg,#1a0e03,#0a0702)", headerBorder: "#c8922a",
+    scoreBg: "#120c02",
+    fontDisplay: "'Cinzel Decorative','Trajan Pro',Georgia,serif",
+    fontBody: "'Cormorant Garamond','Garamond',Georgia,serif",
+    radius: 2, chipRadius: 2, btnRadius: 2,
+    pattern: "repeating-linear-gradient(45deg,transparent,transparent 8px,rgba(200,146,42,0.04) 8px,rgba(200,146,42,0.04) 9px)",
+    patternBg: "",
+    stepColors: ["#c8922a","#3d7a8a","#b5935a","#2d6b5a","#e8b84b","#5a8a6a","#d4af37"],
+    prefix: "𓂀 ",
+  },
+  modern: {
+    id: "modern", name: "Modern Pro", emoji: "◆",
+    tagline: "Precision Engineered",
+    bg: "#080c10", bgDeep: "#050709", card: "#0d1117", card2: "#111820",
+    border: "#1e2d3d", primary: "#00d4ff", primary2: "#00aacc",
+    accent: "#00ff88", accentAlt: "#ff6b35", danger: "#ff2d55", text: "#e2f0ff",
+    textMuted: "#4a7090", white: "#ffffff",
+    headerBg: "linear-gradient(135deg,#0a1520,#060e16)", headerBorder: "#00d4ff",
+    scoreBg: "#06090d",
+    fontDisplay: "'Orbitron','Rajdhani','Courier New',monospace",
+    fontBody: "'DM Mono','IBM Plex Mono','Courier New',monospace",
+    radius: 3, chipRadius: 2, btnRadius: 3,
+    pattern: "repeating-linear-gradient(90deg,transparent,transparent 40px,rgba(0,212,255,0.025) 40px,rgba(0,212,255,0.025) 41px),repeating-linear-gradient(0deg,transparent,transparent 40px,rgba(0,212,255,0.025) 40px,rgba(0,212,255,0.025) 41px)",
+    patternBg: "",
+    stepColors: ["#00d4ff","#00ff88","#0099cc","#00cc66","#ff6b35","#00aacc","#00d4ff"],
+    prefix: "◆ ",
+  },
+  aboriginal: {
+    id: "aboriginal", name: "Dreamtime", emoji: "●",
+    tagline: "Stories in Every Point",
+    bg: "#0d0805", bgDeep: "#080503", card: "#160e08", card2: "#1e1208",
+    border: "#3d2410", primary: "#e8612a", primary2: "#c94e1e",
+    accent: "#f0a830", accentAlt: "#4a8c5c", danger: "#c0392b", text: "#f5e6d0",
+    textMuted: "#8a6040", white: "#faf0e0",
+    headerBg: "linear-gradient(135deg,#1a0e06,#0d0805)", headerBorder: "#e8612a",
+    scoreBg: "#0e0904",
+    fontDisplay: "'Righteous','Oswald',sans-serif",
+    fontBody: "'Nunito','Trebuchet MS',sans-serif",
+    radius: 16, chipRadius: 20, btnRadius: 20,
+    pattern: "radial-gradient(circle at 20px 20px,rgba(232,97,42,0.06) 2px,transparent 2px),radial-gradient(circle at 60px 60px,rgba(240,168,48,0.04) 2px,transparent 2px)",
+    patternBg: "80px 80px",
+    stepColors: ["#e8612a","#4a8c5c","#f0a830","#3a6b4a","#c94e1e","#5a9c6a","#e8612a"],
+    prefix: "● ",
+  },
+  greek: {
+    id: "greek", name: "Ancient Greek", emoji: "Ω",
+    tagline: "Virtue Through Competition",
+    bg: "#08090e", bgDeep: "#050508", card: "#0f1018", card2: "#161720",
+    border: "#2a2d40", primary: "#c5a028", primary2: "#ddb830",
+    accent: "#4a9eff", accentAlt: "#c5a028", danger: "#cc3333", text: "#e8e4d8",
+    textMuted: "#6a6880", white: "#f8f4e8",
+    headerBg: "linear-gradient(135deg,#0f1018,#080910)", headerBorder: "#c5a028",
+    scoreBg: "#080910",
+    fontDisplay: "'Philosopher','Palatino Linotype','Book Antiqua',serif",
+    fontBody: "'EB Garamond','Garamond','Times New Roman',serif",
+    radius: 0, chipRadius: 0, btnRadius: 0,
+    pattern: "repeating-linear-gradient(0deg,transparent,transparent 18px,rgba(197,160,40,0.06) 18px,rgba(197,160,40,0.06) 19px),repeating-linear-gradient(90deg,transparent,transparent 18px,rgba(197,160,40,0.06) 18px,rgba(197,160,40,0.06) 19px)",
+    patternBg: "",
+    stepColors: ["#c5a028","#4a9eff","#ddb830","#3a80d0","#cc8800","#6ab0ff","#c5a028"],
+    prefix: "Ω ",
+    ornamentTop: "◈ ─────────────────────────────────── ◈",
+    ornamentDiv: "⊱ ─────── ⊰",
+  },
+  italian: {
+    id: "italian", name: "Roman Empire", emoji: "⚔",
+    tagline: "Alea Iacta Est",
+    bg: "#0c0806", bgDeep: "#080504", card: "#180d08", card2: "#221208",
+    border: "#4a2810", primary: "#cc4400", primary2: "#e85520",
+    accent: "#d4a017", accentAlt: "#8b6914", danger: "#aa1111", text: "#f0e8d8",
+    textMuted: "#9a7856", white: "#faf4ea",
+    headerBg: "linear-gradient(135deg,#180d08,#0c0806)", headerBorder: "#cc4400",
+    scoreBg: "#100804",
+    fontDisplay: "'Trajan Pro','Cinzel','Times New Roman',serif",
+    fontBody: "'Palatino Linotype','Palatino','Book Antiqua',serif",
+    radius: 0, chipRadius: 0, btnRadius: 2,
+    pattern: "repeating-linear-gradient(45deg,transparent,transparent 12px,rgba(204,68,0,0.04) 12px,rgba(204,68,0,0.04) 13px)",
+    patternBg: "",
+    stepColors: ["#cc4400","#d4a017","#e85520","#b88c14","#aa1111","#cc8800","#d4a017"],
+    prefix: "⚔ ",
+    ornamentDiv: "— SPQR —",
+  },
+};
+
+const THEME_LIST = Object.values(THEMES);
+
+// ─── GOOGLE FONTS LOADER ──────────────────────────────────────────────────────
+function GoogleFonts() {
+  return (
+    <style>{`
+      @import url('https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@400;700;900&family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;0,700;1,400&family=Orbitron:wght@400;700;900&family=DM+Mono:wght@400;500&family=Righteous&family=Nunito:wght@400;600;700;800;900&family=Philosopher:ital,wght@0,400;0,700;1,400&family=EB+Garamond:ital,wght@0,400;0,600;0,800;1,400&family=Cinzel:wght@400;600;700;900&display=swap');
+    `}</style>
+  );
+}
+
+// ─── THEME SELECTOR ───────────────────────────────────────────────────────────
+function ThemeSelector({ current, onSelect, compact = false }) {
+  const [hovered, setHovered] = useState(null);
+
+  if (compact) {
+    // Compact inline switcher for header/stats
+    return (
+      <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+        {THEME_LIST.map(t => (
+          <button
+            key={t.id}
+            title={t.name}
+            onClick={() => onSelect(t.id)}
+            onMouseEnter={() => setHovered(t.id)}
+            onMouseLeave={() => setHovered(null)}
+            style={{
+              width: 28, height: 28, borderRadius: "50%",
+              border: `2px solid ${current === t.id ? t.primary : (hovered === t.id ? t.primary + "80" : "#2a3a4a")}`,
+              background: current === t.id ? t.primary + "30" : (hovered === t.id ? "#1a2a3a" : "transparent"),
+              cursor: "pointer", fontSize: 13, transition: "all 0.15s",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              position: "relative",
+            }}
+          >
+            <span style={{ fontSize: 11 }}>{t.emoji}</span>
+            {current === t.id && (
+              <div style={{ position: "absolute", bottom: -2, left: "50%", transform: "translateX(-50%)", width: 4, height: 4, borderRadius: "50%", background: t.primary }} />
+            )}
+          </button>
+        ))}
+      </div>
+    );
+  }
+
+  // Full selector grid for setup screen
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+        {THEME_LIST.map(t => {
+          const isActive = current === t.id;
+          return (
+            <button
+              key={t.id}
+              onClick={() => onSelect(t.id)}
+              onMouseEnter={() => setHovered(t.id)}
+              onMouseLeave={() => setHovered(null)}
+              style={{
+                padding: "10px 8px",
+                borderRadius: 10,
+                border: `2px solid ${isActive ? t.primary : (hovered === t.id ? t.primary + "60" : "#1e3a5f")}`,
+                background: isActive ? t.primary + "18" : (hovered === t.id ? "#1a2a3a" : "#0d1520"),
+                cursor: "pointer",
+                transition: "all 0.18s",
+                display: "flex", flexDirection: "column", alignItems: "center", gap: 5,
+                boxShadow: isActive ? `0 0 18px ${t.primary}40` : "none",
+              }}
+            >
+              <div style={{ fontSize: 20 }}>{t.emoji}</div>
+              <div style={{ fontSize: 11, fontWeight: 800, color: isActive ? t.primary : "#e8f4f8", letterSpacing: 0.3 }}>{t.name}</div>
+              <div style={{ fontSize: 9, color: isActive ? t.primary2 : "#4a7090", textAlign: "center", lineHeight: 1.3 }}>{t.tagline}</div>
+              {isActive && (
+                <div style={{ width: 20, height: 3, borderRadius: 2, background: t.primary, marginTop: 2 }} />
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+const COURT_GREEN = "#2d6a4f";
+const COURT_LIGHT = "#40916c";
+const ACCENT = "#f4d35e";
+const DANGER = "#e63946";
+const ORANGE = "#e07b54";
+const BG = "#0d1b2a";
+const CARD = "#112233";
+const CARD2 = "#1a2f45";
+const TEXT = "#e8f4f8";
+const MUTED = "#7fa8c0";
+const WHITE = "#ffffff";
+const PURPLE = "#5b2c6f";
+const TEAL = "#1a4d3e";
+const NAVY = "#0e4d6e";
+
+// ─── STYLES ───────────────────────────────────────────────────────────────────
+const s = {
+  app: { fontFamily: "'DM Sans','Segoe UI',sans-serif", background: BG, color: TEXT, minHeight: "100vh", width: "100%", display: "flex", flexDirection: "column", userSelect: "none" },
+  header: { background: `linear-gradient(135deg,${COURT_GREEN},#1b4332)`, padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `2px solid ${ACCENT}`, flexShrink: 0 },
+  headerTitle: { fontSize: 22, fontWeight: 800, letterSpacing: 1, color: WHITE, display: "flex", alignItems: "center", gap: 8 },
+  tagSection: { padding: "8px 12px", borderBottom: `1px solid #1e3a5f` },
+  sectionLabel: { fontSize: 10, fontWeight: 700, letterSpacing: 2, color: MUTED, textTransform: "uppercase", marginBottom: 5 },
+  chipRow: { display: "flex", flexWrap: "wrap", gap: 5 },
+  chip: (active, color = COURT_GREEN) => ({ padding: "6px 11px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer", border: `2px solid ${active ? color : "#1e3a5f"}`, background: active ? color : "transparent", color: active ? WHITE : MUTED, transition: "all 0.15s", lineHeight: 1 }),
+  btn: (color, disabled) => ({ flex: 1, padding: "12px 0", borderRadius: 10, fontWeight: 800, fontSize: 15, cursor: disabled ? "not-allowed" : "pointer", border: "none", background: disabled ? "#1e3a5f" : color, color: disabled ? MUTED : WHITE, letterSpacing: 0.5, transition: "all 0.15s", opacity: disabled ? 0.6 : 1 }),
+  statCard: { background: CARD, borderRadius: 12, padding: "12px 16px", border: `1px solid #1e3a5f` },
+  statTitle: { fontSize: 11, color: MUTED, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 6 },
+  statValue: { fontSize: 28, fontWeight: 900, color: ACCENT },
+  statSub: { fontSize: 12, color: MUTED, marginTop: 2 },
+  input: { width: "100%", padding: "11px 13px", borderRadius: 8, border: `2px solid #1e3a5f`, background: BG, color: TEXT, fontSize: 15, fontFamily: "inherit", outline: "none", boxSizing: "border-box", marginBottom: 10 },
+  label: { fontSize: 11, color: MUTED, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", marginBottom: 4, display: "block" },
+  tabs: { display: "flex", background: BG, borderBottom: `1px solid #1e3a5f`, flexShrink: 0 },
+  tab: (active) => ({ flex: 1, padding: "9px 0", textAlign: "center", fontSize: 12, fontWeight: 700, cursor: "pointer", color: active ? ACCENT : MUTED, borderBottom: active ? `3px solid ${ACCENT}` : "3px solid transparent", background: "transparent", border: "none", letterSpacing: 0.5, transition: "all 0.15s" }),
+  exportBar: { padding: "10px 14px", borderTop: `1px solid #1e3a5f`, display: "flex", gap: 8, flexShrink: 0 },
+  actionBar: { padding: "10px 14px", borderTop: `1px solid #1e3a5f`, display: "flex", gap: 8, flexShrink: 0 },
+};
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+function fmtDuration(ms) {
+  if (!ms || ms < 0) return "—";
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const sec = totalSec % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m ${String(sec).padStart(2,"0")}s`;
+}
+function fmtTime(ts) {
+  if (!ts) return "—";
+  return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+function pct(n, d) { return d ? Math.round((n / d) * 100) : 0; }
+
+// Derive serve side from game score: Deuce = even total points, Ad = odd total points
+// Standard tennis: server starts from Deuce (right) side at 0-0
+function deriveServeSide(scorePoints) {
+  const seq = ["0","15","30","40","AD"];
+  const p1n = seq.indexOf(scorePoints.p1);
+  const p2n = seq.indexOf(scorePoints.p2);
+  // Total points played in this game (approximate from score indices)
+  // Deuce side = even sum, Ad side = odd sum
+  const total = p1n + p2n;
+  return total % 2 === 0 ? "Deuce" : "Ad";
+}
+
+// ─── SCORE LOGIC ──────────────────────────────────────────────────────────────
+function getSetTarget(format) {
+  return (format === "Short Set (1st to 4)" || format === "Best of 3 Short Sets") ? 4 : 6;
+}
+function setsNeeded(format) {
+  if (format === "Best of 5") return 3;
+  if (format === "1 Set" || format === "Short Set (1st to 4)") return 1;
+  return 2;
+}
+
+function rebuildScore(pts, fmt, superTieAt11) {
+  let sc = {
+    sets: [{ p1: 0, p2: 0 }],
+    games: { p1: 0, p2: 0 },
+    points: { p1: "0", p2: "0" },
+    currentSet: 0,
+    server: "p1",
+    matchWinner: null,
+    superTieBreak: false,
+  };
+  for (const p of pts) {
+    const winner = p.pointWinner;
+    if (!winner || sc.matchWinner) continue;
+    const loser = winner === "p1" ? "p2" : "p1";
+
+    if (sc.superTieBreak) {
+      sc.points[winner] = String(Number(sc.points[winner]) + 1);
+      const wp = Number(sc.points[winner]);
+      const lp = Number(sc.points[loser]);
+      if (wp >= 10 && wp - lp >= 2) {
+        sc.sets[sc.currentSet][winner]++;
+        sc.matchWinner = winner;
+      }
+      continue;
+    }
+
+    const wp = sc.points[winner]; const lp = sc.points[loser];
+    let gameWon = false;
+    if (wp === "AD") { gameWon = true; }
+    else if (wp === "40" && lp !== "40" && lp !== "AD") { gameWon = true; }
+    else if (wp === "40" && lp === "40") { sc.points[winner] = "AD"; }
+    else if (wp === "40" && lp === "AD") { sc.points[loser] = "40"; }
+    else {
+      const seq = ["0","15","30","40"];
+      const idx = seq.indexOf(wp);
+      if (idx < 3) sc.points[winner] = seq[idx + 1];
+    }
+    if (!gameWon) continue;
+
+    sc.points = { p1: "0", p2: "0" };
+    sc.games[winner]++;
+    sc.server = sc.server === "p1" ? "p2" : "p1";
+
+    const gW = sc.games[winner], gL = sc.games[loser];
+    const target = getSetTarget(fmt);
+    let setWon = (gW >= target && gW - gL >= 2) || (gW === target + 1 && gL === target);
+    if (!setWon) continue;
+
+    sc.sets[sc.currentSet][winner] = gW;
+    sc.sets[sc.currentSet][loser] = gL;
+    sc.games = { p1: 0, p2: 0 };
+    const sW = setsNeeded(fmt);
+    const setsWonByWinner = sc.sets.filter(st => st[winner] > st[loser]).length;
+    if (setsWonByWinner >= sW) { sc.matchWinner = winner; break; }
+
+    const p1s = sc.sets.filter(st => st.p1 > st.p2).length;
+    const p2s = sc.sets.filter(st => st.p2 > st.p1).length;
+    sc.currentSet++;
+    sc.sets.push({ p1: 0, p2: 0 });
+    if (superTieAt11 && p1s === 1 && p2s === 1) {
+      sc.superTieBreak = true;
+      sc.points = { p1: "0", p2: "0" };
+    }
+  }
+  return sc;
+}
+
+// ─── STATS CALCULATIONS ───────────────────────────────────────────────────────
+function calcStats(points) {
+  if (!points.length) return null;
+  const total = points.length;
+  const p1pts = points.filter(p => p.pointWinner === "p1").length;
+  const p2pts = total - p1pts;
+
+  const serveStats = (pid) => {
+    const served = points.filter(p => p.server === pid);
+    const aces = served.filter(p => p.outcome === "Ace").length;
+    const dfs = served.filter(p => p.outcome === "Double Fault").length;
+    const first = served.filter(p => p.serveType === "1st Serve");
+    const second = served.filter(p => p.serveType === "2nd Serve");
+    const firstWon = first.filter(p => p.pointWinner === pid).length;
+    const secondWon = second.filter(p => p.pointWinner === pid).length;
+    const faults = served.filter(p => p.serveFault && p.serveFault !== "?");
+    const faultTypes = {};
+    faults.forEach(p => { faultTypes[p.serveFault] = (faultTypes[p.serveFault] || 0) + 1; });
+    const zoneCount = (side) => {
+      const z = {};
+      served.filter(p => p.serveSide === side && p.serveZone).forEach(p => {
+        z[p.serveZone] = (z[p.serveZone] || 0) + 1;
+      });
+      return z;
+    };
+    return {
+      total: served.length, aces, dfs,
+      firstIn: first.length, firstWon,
+      secondIn: second.length, secondWon,
+      faultTypes,
+      deuceZones: zoneCount("Deuce"),
+      adZones: zoneCount("Ad"),
+    };
+  };
+
+  const rallyDist = {};
+  RALLY_RANGES.forEach(r => { rallyDist[r] = points.filter(p => p.rallyLength === r).length; });
+
+  const netP1 = points.filter(p => p.netApproach && p.server === "p1");
+  const netP2 = points.filter(p => p.netApproach && p.server === "p2");
+
+  const bpFor = (pid) => points.filter(p => p.pressurePoint && p.server !== pid);
+  const bpWon = (pid) => bpFor(pid).filter(p => p.pointWinner === pid);
+  const bpFaced = (pid) => points.filter(p => p.pressurePoint && p.server === pid);
+  const bpSaved = (pid) => bpFaced(pid).filter(p => p.pointWinner === pid);
+
+  const retZoneCount = (pid) => {
+    const z = {};
+    points.filter(p => p.server !== pid && p.returnLandZone).forEach(p => {
+      z[p.returnLandZone] = (z[p.returnLandZone] || 0) + 1;
+    });
+    return z;
+  };
+
+  // Serve & Volley stats: server went to net (Serve +1 was a volley)
+  const serveVolley = (pid) => {
+    const sv = points.filter(p => p.server === pid &&
+      (p.servePlusOne === "Volley" || p.servePlusOne === "Volley Forehand" || p.servePlusOne === "Volley Backhand"));
+    return {
+      total: sv.length,
+      won: sv.filter(p => p.pointWinner === pid).length,
+    };
+  };
+
+  return {
+    total, p1pts, p2pts,
+    p1serve: serveStats("p1"), p2serve: serveStats("p2"),
+    rallyDist,
+    netP1, netP2,
+    p1winners: points.filter(p => p.pointWinner === "p1" && (p.outcome === "Winner" || p.outcome === "Ace")).length,
+    p2winners: points.filter(p => p.pointWinner === "p2" && (p.outcome === "Winner" || p.outcome === "Ace")).length,
+    p1ue: points.filter(p => p.outcome === "Unforced Error" && p.server !== "p1").length,
+    p2ue: points.filter(p => p.outcome === "Unforced Error" && p.server !== "p2").length,
+    p1bp: { opp: bpFor("p1").length, won: bpWon("p1").length, faced: bpFaced("p1").length, saved: bpSaved("p1").length },
+    p2bp: { opp: bpFor("p2").length, won: bpWon("p2").length, faced: bpFaced("p2").length, saved: bpSaved("p2").length },
+    p1returnZones: retZoneCount("p1"),
+    p2returnZones: retZoneCount("p2"),
+    p1sv: serveVolley("p1"),
+    p2sv: serveVolley("p2"),
+  };
+}
+
+// ─── CSV EXPORT ───────────────────────────────────────────────────────────────
+function exportCSV(points, setup) {
+  const hdrs = ["Pt#","Server","ServeSide","ServeType","ServeDir","ServeZone","ServeFault","ReturnHand","ReturnLandZone","Serve+1","Return+1","Rally","Outcome","ErrorShot","WinningShot","Net","PressurePt","Winner"];
+  const rows = points.map((p, i) => [
+    i+1,
+    p.server === "p1" ? setup.player1 : setup.player2,
+    p.serveSide || "",
+    p.serveType || "",
+    p.serveDir || "",
+    p.serveZone || "",
+    p.serveFault && p.serveFault !== "?" ? p.serveFault : "",
+    p.returnHand || "",
+    p.returnLandZone || "",
+    p.servePlusOne || "",
+    p.returnPlusOne || "",
+    p.rallyLength || "",
+    p.outcome || "",
+    p.errorShot || "",
+    p.shotType || "",
+    p.netApproach ? "Yes" : "No",
+    p.pressurePoint ? "Yes" : "No",
+    p.pointWinner === "p1" ? setup.player1 : setup.player2,
+  ].join(","));
+  const csv = [hdrs.join(","), ...rows].join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${setup.player1}_vs_${setup.player2}_${setup.date}.csv`;
+  a.click();
+}
+
+// ─── TOGGLE ───────────────────────────────────────────────────────────────────
+function Toggle({ label, sub, value, onChange, activeColor = COURT_GREEN }) {
+  return (
+    <div style={{ ...s.tagSection, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <div>
+        <div style={{ ...s.sectionLabel, marginBottom: sub ? 2 : 0 }}>{label}</div>
+        {sub && <div style={{ fontSize: 10, color: MUTED }}>{sub}</div>}
+      </div>
+      <button onClick={() => onChange(!value)} style={{
+        width: 52, height: 28, borderRadius: 14, flexShrink: 0, cursor: "pointer",
+        background: value ? activeColor : "#1e3a5f",
+        border: `2px solid ${value ? activeColor : "#1e3a5f"}`,
+        position: "relative", transition: "all 0.2s",
+      }}>
+        <div style={{ width: 20, height: 20, borderRadius: "50%", background: value ? WHITE : MUTED, position: "absolute", top: 2, left: value ? 26 : 2, transition: "left 0.2s" }} />
+      </button>
+    </div>
+  );
+}
+
+// ─── STAT CARD ────────────────────────────────────────────────────────────────
+function StatCard({ title, value, sub, color = ACCENT }) {
+  return (
+    <div style={s.statCard}>
+      <div style={s.statTitle}>{title}</div>
+      <div style={{ ...s.statValue, color }}>{value}</div>
+      {sub && <div style={s.statSub}>{sub}</div>}
+    </div>
+  );
+}
+
+function BarStat({ label, p1, p2 }) {
+  const total = p1 + p2 || 1;
+  return (
+    <div style={{ marginBottom: 9 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: ACCENT }}>{p1}</span>
+        <span style={{ fontSize: 11, color: MUTED }}>{label}</span>
+        <span style={{ fontSize: 13, fontWeight: 700, color: ORANGE }}>{p2}</span>
+      </div>
+      <div style={{ display: "flex", height: 7, borderRadius: 4, overflow: "hidden", background: "#1e3a5f" }}>
+        <div style={{ width: `${(p1/total)*100}%`, background: ACCENT, transition: "width 0.3s" }} />
+        <div style={{ width: `${(p2/total)*100}%`, background: ORANGE }} />
+      </div>
+    </div>
+  );
+}
+
+// ─── COURT ZONE PICKER ────────────────────────────────────────────────────────
+function CourtZonePicker({ side, value, onChange }) {
+  // 3 cols (Wide/Body/T) × 2 rows (Deep/Mid) from server's view
+  // Ad side mirrors: T is left, Wide is right
+  const leftToRight = side === "Ad" ? ["T","Body","Wide"] : ["Wide","Body","T"];
+  const rows = ["Deep","Mid"];
+  const allZones = rows.flatMap(r => leftToRight.map(c => `${c}-${r}`));
+
+  return (
+    <div style={{ marginTop: 6 }}>
+      <div style={{ fontSize: 9, color: MUTED, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 4 }}>
+        Landing Zone {side && <span style={{ color: side === "Deuce" ? "#7eb3ff" : ACCENT }}>({side})</span>}
+      </div>
+      <div style={{ position: "relative", background: COURT_GREEN, borderRadius: 8, border: `2px solid #ffffff30`, overflow: "hidden" }}>
+        {/* Service box lines */}
+        <div style={{ position: "absolute", top: 0, bottom: 0, left: "50%", width: 1, background: "#ffffff50" }} />
+        <div style={{ position: "absolute", top: "50%", left: 0, right: 0, height: 1, background: "#ffffff40" }} />
+        {/* Grid */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 2, padding: 3, height: 76 }}>
+          {allZones.map(z => {
+            const active = value === z;
+            const [col] = z.split("-");
+            return (
+              <button key={z} onClick={() => onChange(value === z ? null : z)} style={{
+                borderRadius: 5, border: `2px solid ${active ? WHITE : "transparent"}`,
+                background: active ? ACCENT : `${WHITE}18`,
+                cursor: "pointer", fontSize: 10, fontWeight: 800,
+                color: active ? "#000" : `${WHITE}80`,
+                transition: "all 0.15s", padding: 0,
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}>
+                {z}
+              </button>
+            );
+          })}
+        </div>
+        {/* Labels */}
+        <div style={{ display: "flex", background: "#00000030", padding: "2px 3px" }}>
+          {leftToRight.map(l => <div key={l} style={{ flex: 1, textAlign: "center", fontSize: 8, color: `${WHITE}80`, fontWeight: 700 }}>{l}</div>)}
+        </div>
+        {/* Net */}
+        <div style={{ height: 4, background: "#ffffff60" }} />
+      </div>
+      {value && <div style={{ fontSize: 10, color: ACCENT, fontWeight: 700, textAlign: "center", marginTop: 3 }}>✓ {value}</div>}
+    </div>
+  );
+}
+
+// ─── RETURN LANDING PICKER ────────────────────────────────────────────────────
+function ReturnLandPicker({ value, onChange }) {
+  const zones = [
+    ["Cross-Deep","Center-Deep","Wide-Deep"],
+    ["Cross-Mid","Center-Mid","Wide-Mid"],
+  ];
+  return (
+    <div style={{ marginTop: 5 }}>
+      <div style={{ background: "#1a5b3a", borderRadius: 7, border: `2px solid #ffffff30`, overflow: "hidden" }}>
+        <div style={{ height: 3, background: "#ffffff70" }} />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 2, padding: 3 }}>
+          {zones.flat().map(z => (
+            <button key={z} onClick={() => onChange(value === z ? null : z)} style={{
+              padding: "8px 2px", borderRadius: 5, fontSize: 9, fontWeight: 700, cursor: "pointer",
+              border: `2px solid ${value === z ? ACCENT : "transparent"}`,
+              background: value === z ? ACCENT : `${WHITE}18`,
+              color: value === z ? "#000" : `${WHITE}80`, transition: "all 0.15s",
+            }}>
+              {z.replace("-"," ").split(" ").map(w => w.slice(0,5)).join("\n")}
+            </button>
+          ))}
+        </div>
+        <button onClick={() => onChange(value === "Net" ? null : "Net")} style={{
+          width: "100%", padding: "5px 0", fontSize: 10, fontWeight: 800, border: "none",
+          background: value === "Net" ? DANGER : `${DANGER}35`,
+          color: value === "Net" ? WHITE : DANGER, cursor: "pointer", transition: "all 0.15s",
+        }}>NET</button>
+      </div>
+      {value && <div style={{ fontSize: 10, color: ACCENT, fontWeight: 700, textAlign: "center", marginTop: 3 }}>↓ {value}</div>}
+    </div>
+  );
+}
+
+// ─── HEATMAPS (for report) ────────────────────────────────────────────────────
+function ServeZoneHeatmap({ title, zones, side }) {
+  const leftToRight = side === "Ad" ? ["T","Body","Wide"] : ["Wide","Body","T"];
+  const rows = ["Deep","Mid"];
+  const allZones = rows.flatMap(r => leftToRight.map(c => `${c}-${r}`));
+  const max = Math.max(1, ...Object.values(zones));
+  return (
+    <div style={{ ...s.statCard }}>
+      <div style={{ ...s.statTitle, marginBottom: 6, color: side === "Deuce" ? "#7eb3ff" : ACCENT }}>{title} ({side})</div>
+      <div style={{ background: COURT_GREEN, borderRadius: 7, padding: 4, border: `2px solid #ffffff30` }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 3, height: 80 }}>
+          {allZones.map(z => {
+            const count = zones[z] || 0;
+            const intensity = count / max;
+            return (
+              <div key={z} style={{ borderRadius: 5, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: `rgba(244,211,94,${0.1 + intensity * 0.85})`, border: `1px solid rgba(244,211,94,${0.2 + intensity * 0.5})` }}>
+                <div style={{ fontSize: 15, fontWeight: 900, color: intensity > 0.45 ? "#000" : ACCENT }}>{count}</div>
+                <div style={{ fontSize: 7, color: intensity > 0.45 ? "#333" : `${WHITE}70`, fontWeight: 700 }}>{z}</div>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-around", paddingTop: 4, borderTop: `1px solid #ffffff30`, marginTop: 3 }}>
+          {leftToRight.map(c => <span key={c} style={{ fontSize: 8, color: `${WHITE}80`, fontWeight: 700 }}>{c}</span>)}
+        </div>
+        <div style={{ height: 4, background: "#ffffff60", borderRadius: 2, marginTop: 3 }} />
+      </div>
+    </div>
+  );
+}
+
+function ReturnZoneHeatmap({ title, zones }) {
+  const allZones = [["Cross-Deep","Center-Deep","Wide-Deep"],["Cross-Mid","Center-Mid","Wide-Mid"]];
+  const max = Math.max(1, ...Object.values(zones));
+  return (
+    <div style={{ ...s.statCard }}>
+      <div style={{ ...s.statTitle, marginBottom: 6 }}>{title}</div>
+      <div style={{ background: "#1a5b3a", borderRadius: 7, padding: 4, border: `2px solid #ffffff30` }}>
+        <div style={{ height: 3, background: "#ffffff70", borderRadius: 2, marginBottom: 4 }} />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 3 }}>
+          {allZones.flat().map(z => {
+            const count = zones[z] || 0;
+            const intensity = count / max;
+            return (
+              <div key={z} style={{ padding: "8px 3px", borderRadius: 5, textAlign: "center", background: `rgba(64,145,108,${0.15 + intensity * 0.8})`, border: `1px solid rgba(64,145,108,${0.3 + intensity * 0.5})` }}>
+                <div style={{ fontSize: 14, fontWeight: 800, color: intensity > 0.5 ? WHITE : COURT_LIGHT }}>{count}</div>
+                <div style={{ fontSize: 7, color: MUTED }}>{z.split("-").map(w=>w.slice(0,5)).join(" ")}</div>
+              </div>
+            );
+          })}
+        </div>
+        {zones["Net"] > 0 && (
+          <div style={{ marginTop: 4, padding: "4px", borderRadius: 5, textAlign: "center", background: `${DANGER}40`, border: `1px solid ${DANGER}60` }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: DANGER }}>Net: {zones["Net"]}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── SUPER TIE-BREAK MODAL ────────────────────────────────────────────────────
+function SuperTieModal({ setup, onDecide }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.82)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <div style={{ background: CARD, borderRadius: 20, padding: 32, maxWidth: 440, width: "100%", border: `3px solid ${ACCENT}`, boxShadow: "0 24px 80px #000c" }}>
+        <div style={{ fontSize: 36, textAlign: "center", marginBottom: 10 }}>🔥</div>
+        <div style={{ fontSize: 22, fontWeight: 900, color: WHITE, textAlign: "center", marginBottom: 6 }}>Sets are 1 — 1</div>
+        <div style={{ fontSize: 14, color: MUTED, textAlign: "center", marginBottom: 26 }}>
+          {setup.player1} vs {setup.player2}
+          <br /><br />How will the deciding set be played?
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <button onClick={() => onDecide(true)} style={{ padding: "18px 0", borderRadius: 12, fontWeight: 800, fontSize: 17, cursor: "pointer", border: `2px solid ${ACCENT}`, background: `${ACCENT}22`, color: ACCENT }}>
+            ⚡ Super Tie-Break (first to 10)
+          </button>
+          <button onClick={() => onDecide(false)} style={{ padding: "18px 0", borderRadius: 12, fontWeight: 800, fontSize: 17, cursor: "pointer", border: `2px solid ${COURT_GREEN}`, background: `${COURT_GREEN}33`, color: COURT_LIGHT }}>
+            🎾 Normal Deciding Set
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── PDF EXPORT ───────────────────────────────────────────────────────────────
+function exportPDF(points, setup, score, matchTime, conditions) {
+  const stats = calcStats(points);
+  const { player1, player2 } = setup;
+  const duration = matchTime.start && matchTime.end ? fmtDuration(matchTime.end - matchTime.start) : "In progress";
+  const pct = (n, d) => d ? Math.round((n / d) * 100) + "%" : "—";
+
+  // Zone heatmap table — no nested template literals
+  function zoneTable(zones, side) {
+    const ltr = side === "Ad" ? ["T","Body","Wide"] : ["Wide","Body","T"];
+    const max = Math.max(1, ...Object.values(zones));
+    let headerCells = ltr.map(c => "<th>" + c + "</th>").join("");
+    let deepCells = ltr.map(c => {
+      const v = zones[c + "-Deep"] || 0;
+      const alpha = (0.08 + (v/max) * 0.8).toFixed(2);
+      return "<td style='background:rgba(244,211,94," + alpha + ");font-weight:" + (v/max > 0.4 ? 700 : 400) + "'>" + v + "<br><small>Deep</small></td>";
+    }).join("");
+    let midCells = ltr.map(c => {
+      const v = zones[c + "-Mid"] || 0;
+      const alpha = (0.08 + (v/max) * 0.8).toFixed(2);
+      return "<td style='background:rgba(244,211,94," + alpha + ");font-weight:" + (v/max > 0.4 ? 700 : 400) + "'>" + v + "<br><small>Mid</small></td>";
+    }).join("");
+    return "<table class='zone-table'><thead><tr><th colspan='3'>" + side + " Side</th></tr><tr>" + headerCells + "</tr></thead><tbody><tr>" + deepCells + "</tr><tr>" + midCells + "</tr></tbody></table>";
+  }
+
+  function retZoneTable(zones) {
+    const max = Math.max(1, ...Object.values(zones));
+    const cols = ["Cross","Center","Wide"];
+    const depths = ["Deep","Mid"];
+    let rows = depths.map(depth => {
+      let cells = cols.map(col => {
+        const key = col + "-" + depth;
+        const v = zones[key] || 0;
+        const alpha = (0.1 + (v/max) * 0.75).toFixed(2);
+        return "<td style='background:rgba(64,145,108," + alpha + ");font-weight:" + (v/max > 0.4 ? 700 : 400) + "'>" + v + "<br><small>" + depth + "</small></td>";
+      }).join("");
+      return "<tr>" + cells + "</tr>";
+    }).join("");
+    const netRow = (zones["Net"] || 0) > 0
+      ? "<tr><td colspan='3' style='background:#ffe0e0;color:#c0392b;font-weight:700;text-align:center;padding:4px'>Net: " + zones["Net"] + "</td></tr>"
+      : "";
+    return "<table class='zone-table'><thead><tr><th>Cross</th><th>Center</th><th>Wide</th></tr></thead><tbody>" + rows + netRow + "</tbody></table>";
+  }
+
+  function statRow(label, v1, v2) {
+    return "<tr><td class='sv p1'>" + v1 + "</td><td class='sl'>" + label + "</td><td class='sv p2'>" + v2 + "</td></tr>";
+  }
+
+  function bpBox(name, bp, col) {
+    return "<div class='bp-box'>" +
+      "<div style='font-weight:800;color:" + col + ";margin-bottom:6px'>" + name + "</div>" +
+      "<div class='bp-row'><span>BP Chances</span><span><b>" + bp.opp + "</b></span></div>" +
+      "<div class='bp-row'><span>BP Won</span><span><b style='color:#27ae60'>" + bp.won + "</b> (" + pct(bp.won, bp.opp) + ")</span></div>" +
+      "<div class='bp-row'><span>BP Faced</span><span><b style='color:#c0392b'>" + bp.faced + "</b></span></div>" +
+      "<div class='bp-row'><span>BP Saved</span><span><b>" + bp.saved + "</b> (" + pct(bp.saved, bp.faced) + ")</span></div>" +
+      "</div>";
+  }
+
+  function rallyRow(label, count, total) {
+    const p = total ? Math.round((count / total) * 100) : 0;
+    return "<div class='rrow'>" +
+      "<span style='width:36px;font-weight:700'>" + label + "</span>" +
+      "<div class='rbg'><div class='rfill' style='width:" + p + "%'></div></div>" +
+      "<span style='width:26px;text-align:right;font-weight:700;color:#2d6a4f'>" + count + "</span>" +
+      "<span style='width:32px;color:#999'>" + p + "%</span>" +
+      "</div>";
+  }
+
+  function pointLogRow(p, i, player1, player2) {
+    const srv = p.server === "p1" ? player1 : player2;
+    const win = p.pointWinner === "p1" ? player1 : player2;
+    const oc = p.outcome || "";
+    const cls = (oc === "Winner" || oc === "Ace") ? "win" : (oc.includes("Error") || oc === "Double Fault") ? "err" : "";
+    const fault = p.serveFault && p.serveFault !== "?" ? p.serveFault : "—";
+    const ocLabel = p.errorShot ? ((oc.includes("Un") ? "UE" : "FE") + "-" + p.errorShot) : oc || "—";
+    const even = i % 2 === 0 ? "style='background:#f8f9fb'" : "";
+    return "<tr " + even + ">" +
+      "<td>" + (i+1) + "</td><td>" + srv + "</td>" +
+      "<td>" + (p.serveType ? p.serveType.replace(" Serve","") : "—") + "</td>" +
+      "<td>" + (p.serveSide ? p.serveSide.slice(0,1) : "—") + "</td>" +
+      "<td>" + (p.serveDir || "—") + "</td>" +
+      "<td>" + (p.serveZone || "—") + "</td>" +
+      "<td style='color:#c0392b'>" + fault + "</td>" +
+      "<td>" + (p.returnHand || "—") + "</td>" +
+      "<td>" + (p.returnLandZone || "—") + "</td>" +
+      "<td>" + (p.servePlusOne || "—") + "</td>" +
+      "<td>" + (p.returnPlusOne || "—") + "</td>" +
+      "<td>" + (p.rallyLength || "—") + "</td>" +
+      "<td class='" + cls + "'>" + ocLabel + "</td>" +
+      "<td><b>" + win + "</b></td>" +
+      "<td>" + (p.netApproach ? "✓" : "") + "</td>" +
+      "<td style='color:#c0392b'>" + (p.pressurePoint ? "●" : "") + "</td>" +
+      "</tr>";
+  }
+
+  const css = [
+    "*{box-sizing:border-box;margin:0;padding:0}",
+    "body{font-family:'Helvetica Neue',Arial,sans-serif;background:#fff;color:#1a1a2e;font-size:12px}",
+    "@page{size:A4;margin:14mm}",
+    ".page{max-width:780px;margin:0 auto;padding:20px}",
+    ".hdr{background:linear-gradient(135deg,#2d6a4f,#1b4332);color:#fff;border-radius:10px;padding:16px 20px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center}",
+    ".hdr h1{font-size:19px;font-weight:900}.hdr .meta{font-size:10px;opacity:.8;margin-top:2px}",
+    ".dur{font-size:17px;font-weight:800;color:#f4d35e;margin-top:3px}",
+    ".score-box{background:#f0f4f8;border-radius:8px;padding:10px 16px;margin-bottom:14px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}",
+    ".sn{border-radius:4px;padding:3px 9px;font-weight:800;font-size:16px;color:#fff}",
+    ".cond{background:#fffbeb;border-left:4px solid #f4d35e;padding:7px 11px;margin-bottom:14px;font-size:11px;color:#555;font-style:italic;border-radius:0 6px 6px 0}",
+    "h2{font-size:13px;font-weight:800;color:#1b4332;border-bottom:2px solid #2d6a4f;padding-bottom:3px;margin:18px 0 8px;text-transform:uppercase;letter-spacing:1px}",
+    "h3{font-size:11px;font-weight:700;color:#2d6a4f;margin:10px 0 5px}",
+    ".st{width:100%;border-collapse:collapse;margin-bottom:12px}",
+    ".st .sv{width:28%;text-align:center;font-size:14px;font-weight:700;padding:5px 3px}",
+    ".st .p1{color:#1a5276}.st .p2{color:#8b0000}",
+    ".st .sl{text-align:center;font-size:10px;color:#666;font-weight:600;padding:4px 6px;border-top:1px solid #eee;border-bottom:1px solid #eee;background:#f9f9f9}",
+    ".pcols{display:flex;justify-content:space-between;margin-bottom:5px}",
+    ".p1n{font-weight:800;color:#1a5276;font-size:12px}.p2n{font-weight:800;color:#8b0000;font-size:12px}",
+    ".zg{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}",
+    ".zone-table{width:100%;border-collapse:collapse;font-size:11px}",
+    ".zone-table th{background:#2d6a4f;color:#fff;padding:4px;text-align:center;font-size:10px}",
+    ".zone-table td{padding:7px 3px;text-align:center;border:1px solid #ddd}",
+    ".zone-table small{display:block;font-size:8px;color:#999}",
+    ".bp-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}",
+    ".bp-box{border:1px solid #ddd;border-radius:7px;padding:9px 11px}",
+    ".bp-row{display:flex;justify-content:space-between;font-size:10px;padding:2px 0;border-bottom:1px solid #f5f5f5}",
+    ".rrow{display:flex;align-items:center;gap:7px;margin-bottom:5px;font-size:11px}",
+    ".rbg{flex:1;height:7px;background:#e8ecf0;border-radius:4px}",
+    ".rfill{height:7px;background:#2d6a4f;border-radius:4px}",
+    ".lt{width:100%;border-collapse:collapse;font-size:9px;margin-top:6px}",
+    ".lt th{background:#2d6a4f;color:#fff;padding:3px 2px;font-size:8px;text-align:left}",
+    ".lt td{padding:3px 2px;border-bottom:1px solid #f0f0f0}",
+    ".win{color:#27ae60;font-weight:700}.err{color:#c0392b;font-weight:700}",
+    "@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}",
+  ].join("");
+
+  let html = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>TennisTag - " + player1 + " vs " + player2 + "</title><style>" + css + "</style></head><body><div class='page'>";
+
+  // Header
+  html += "<div class='hdr'><div>";
+  html += "<div class='meta'>TennisTag Pro · " + setup.surface + " · " + setup.format + (setup.tournament ? " · " + setup.tournament : "") + "</div>";
+  html += "<h1>" + player1 + " vs " + player2 + "</h1>";
+  html += "<div class='meta'>" + setup.date + "</div>";
+  html += "</div><div style='text-align:right'>";
+  if (matchTime.start) html += "<div style='font-size:10px;opacity:.8'>Start: " + fmtTime(matchTime.start) + "</div>";
+  if (matchTime.end)   html += "<div style='font-size:10px;opacity:.8'>End: " + fmtTime(matchTime.end) + "</div>";
+  html += "<div class='dur'>&#9201; " + duration + "</div>";
+  html += "</div></div>";
+
+  // Score
+  html += "<div class='score-box'>";
+  html += "<span style='font-weight:800;color:#1a5276'>" + player1 + "</span>";
+  score.sets.forEach(st => { html += "<span class='sn' style='background:#2d6a4f'>" + st.p1 + "</span>"; });
+  html += "<span style='font-size:16px;font-weight:900;color:#aaa'>vs</span>";
+  score.sets.forEach(st => { html += "<span class='sn' style='background:#8b0000'>" + st.p2 + "</span>"; });
+  html += "<span style='font-weight:800;color:#8b0000'>" + player2 + "</span>";
+  if (score.matchWinner) {
+    const wName = score.matchWinner === "p1" ? player1 : player2;
+    html += "<span style='font-size:12px;font-weight:800;color:#2d6a4f;margin-left:auto'>Winner: " + wName + "</span>";
+  }
+  html += "</div>";
+
+  // Conditions
+  if (conditions) html += "<div class='cond'>Conditions: " + conditions + "</div>";
+
+  if (!stats) {
+    html += "<p>No points logged.</p>";
+  } else {
+    // Match stats
+    html += "<h2>Match Statistics</h2>";
+    html += "<div class='pcols'><span class='p1n'>" + player1 + "</span><span style='font-size:10px;color:#888'>" + stats.total + " pts</span><span class='p2n'>" + player2 + "</span></div>";
+    html += "<table class='st'><tbody>";
+    html += statRow("Points Won", stats.p1pts, stats.p2pts);
+    html += statRow("Winners", stats.p1winners, stats.p2winners);
+    html += statRow("Unforced Errors", stats.p1ue, stats.p2ue);
+    html += statRow("Aces", stats.p1serve.aces, stats.p2serve.aces);
+    html += statRow("Double Faults", stats.p1serve.dfs, stats.p2serve.dfs);
+    html += statRow("1st Serve Won %", pct(stats.p1serve.firstWon, stats.p1serve.firstIn), pct(stats.p2serve.firstWon, stats.p2serve.firstIn));
+    html += statRow("2nd Serve Won %", pct(stats.p1serve.secondWon, stats.p1serve.secondIn), pct(stats.p2serve.secondWon, stats.p2serve.secondIn));
+    html += statRow("Net Approaches", stats.netP1.length, stats.netP2.length);
+    html += statRow("Net Points Won", stats.netP1.filter(p=>p.pointWinner==="p1").length, stats.netP2.filter(p=>p.pointWinner==="p2").length);
+    if (stats.p1sv.total > 0 || stats.p2sv.total > 0) {
+      html += statRow("Serve & Volley", stats.p1sv.total, stats.p2sv.total);
+      html += statRow("S&V Won %", pct(stats.p1sv.won, stats.p1sv.total) + "%", pct(stats.p2sv.won, stats.p2sv.total) + "%");
+    }
+    html += "</tbody></table>";
+
+    // Serve zones
+    html += "<h2>Serve Landing Zones</h2>";
+    html += "<h3>" + player1 + "</h3><div class='zg'>" + zoneTable(stats.p1serve.deuceZones,"Deuce") + zoneTable(stats.p1serve.adZones,"Ad") + "</div>";
+    html += "<h3>" + player2 + "</h3><div class='zg'>" + zoneTable(stats.p2serve.deuceZones,"Deuce") + zoneTable(stats.p2serve.adZones,"Ad") + "</div>";
+
+    // Return zones
+    html += "<h2>Return Landing Zones</h2>";
+    html += "<div class='zg'>";
+    html += "<div><h3>" + player1 + "</h3>" + retZoneTable(stats.p1returnZones) + "</div>";
+    html += "<div><h3>" + player2 + "</h3>" + retZoneTable(stats.p2returnZones) + "</div>";
+    html += "</div>";
+
+    // Break points
+    html += "<h2>Break Points</h2><div class='bp-grid'>";
+    html += bpBox(player1, stats.p1bp, "#1a5276");
+    html += bpBox(player2, stats.p2bp, "#8b0000");
+    html += "</div>";
+
+    // Rally length
+    html += "<h2>Rally Length</h2>";
+    RALLY_RANGES.forEach(r => { html += rallyRow(r, stats.rallyDist[r] || 0, stats.total); });
+
+    // Point log
+    html += "<h2>Full Point Log</h2>";
+    html += "<table class='lt'><thead><tr><th>#</th><th>Server</th><th>Type</th><th>Side</th><th>Dir</th><th>Zone</th><th>Fault</th><th>Ret.Hand</th><th>Ret.Zone</th><th>Srv+1</th><th>Ret+1</th><th>Rally</th><th>Outcome</th><th>Winner</th><th>Net</th><th>Pres</th></tr></thead><tbody>";
+    points.forEach((p, i) => { html += pointLogRow(p, i, player1, player2); });
+    html += "</tbody></table>";
+  }
+
+  html += "<div style='margin-top:22px;text-align:center;font-size:9px;color:#bbb;border-top:1px solid #eee;padding-top:8px'>Generated by TennisTag Pro &middot; " + new Date().toLocaleDateString() + "</div>";
+  html += "</div><script>window.onload=function(){window.print();}<\/script></body></html>";
+
+  const w = window.open("", "_blank");
+  if (w) { w.document.write(html); w.document.close(); }
+}
+
+// ─── SETUP SCREEN ─────────────────────────────────────────────────────────────
+function SetupScreen({ onStart, themeId, onThemeChange, T }) {
+  const [form, setForm] = useState({
+    player1: "", player2: "", surface: "Hard",
+    date: new Date().toISOString().slice(0,10),
+    tournament: "", format: "Best of 3",
+    conditions: "",
+    p1utr: "", p2utr: "",
+    p1hand: "", p2hand: "",
+  });
+  const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
+  const valid = form.player1.trim() && form.player2.trim();
+  const canSuperTie = ["Best of 3","Best of 3 Short Sets"].includes(form.format);
+
+  return (
+    <div style={{ flex: 1, overflowY: "auto", padding: 20, background: BG }}>
+      <div style={{ textAlign: "center", marginBottom: 18 }}>
+        <div style={{ fontSize: 36 }}>🎾</div>
+        <div style={{ fontSize: 26, fontWeight: 900, color: WHITE }}>TennisTag Pro</div>
+        <div style={{ fontSize: 13, color: MUTED, marginTop: 3 }}>Live Match Tagging System</div>
+      </div>
+      <div style={{ maxWidth: 580, margin: "0 auto", background: CARD, borderRadius: 16, padding: 26, border: `1px solid #1e3a5f` }}>
+        <div style={{ fontSize: 15, fontWeight: 800, color: (T && T.primary2) || WHITE, marginBottom: 10, fontFamily: (T && T.fontDisplay) || "inherit" }}>New Match Setup</div>
+
+        {/* Theme selector */}
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ fontSize: 11, color: MUTED, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", marginBottom: 6, display: "block" }}>
+            App Theme
+          </label>
+          <ThemeSelector current={themeId} onSelect={onThemeChange} />
+        </div>
+
+        {/* Player 1 */}
+        <div style={{ border: `1px solid #1e3a5f`, borderRadius: 10, padding: "12px 14px", marginBottom: 12, background: "#0d1520" }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: ACCENT, letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 }}>🎾 Player 1 — Serves First</div>
+          <label style={s.label}>Name</label>
+          <input style={s.input} placeholder="Player 1 name..." value={form.player1} onChange={e => set("player1", e.target.value)} />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div>
+              <label style={s.label}>UTR <span style={{ color: MUTED, fontWeight: 400, textTransform: "none", letterSpacing: 0, fontSize: 10 }}>(optional)</span></label>
+              <input style={{ ...s.input, marginBottom: 0 }} placeholder="e.g. 12.45" value={form.p1utr}
+                onChange={e => set("p1utr", e.target.value.replace(/[^0-9.]/g, ""))} />
+            </div>
+            <div>
+              <label style={s.label}>Dominant Hand <span style={{ color: MUTED, fontWeight: 400, textTransform: "none", letterSpacing: 0, fontSize: 10 }}>(optional)</span></label>
+              <div style={{ display: "flex", gap: 6 }}>
+                {["Right","Left"].map(h => (
+                  <button key={h} onClick={() => set("p1hand", form.p1hand === h ? "" : h)}
+                    style={{ ...s.chip(form.p1hand === h, ACCENT), flex: 1, textAlign: "center", fontSize: 12 }}>
+                    {h === "Right" ? "✊ Right" : "🤚 Left"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Player 2 */}
+        <div style={{ border: `1px solid #1e3a5f`, borderRadius: 10, padding: "12px 14px", marginBottom: 14, background: "#0d1520" }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: ORANGE, letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 }}>🎾 Player 2</div>
+          <label style={s.label}>Name</label>
+          <input style={s.input} placeholder="Player 2 name..." value={form.player2} onChange={e => set("player2", e.target.value)} />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div>
+              <label style={s.label}>UTR <span style={{ color: MUTED, fontWeight: 400, textTransform: "none", letterSpacing: 0, fontSize: 10 }}>(optional)</span></label>
+              <input style={{ ...s.input, marginBottom: 0 }} placeholder="e.g. 11.80" value={form.p2utr}
+                onChange={e => set("p2utr", e.target.value.replace(/[^0-9.]/g, ""))} />
+            </div>
+            <div>
+              <label style={s.label}>Dominant Hand <span style={{ color: MUTED, fontWeight: 400, textTransform: "none", letterSpacing: 0, fontSize: 10 }}>(optional)</span></label>
+              <div style={{ display: "flex", gap: 6 }}>
+                {["Right","Left"].map(h => (
+                  <button key={h} onClick={() => set("p2hand", form.p2hand === h ? "" : h)}
+                    style={{ ...s.chip(form.p2hand === h, ORANGE), flex: 1, textAlign: "center", fontSize: 12 }}>
+                    {h === "Right" ? "✊ Right" : "🤚 Left"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+        <label style={s.label}>Tournament / Event</label>
+        <input style={s.input} placeholder="Optional..." value={form.tournament} onChange={e => set("tournament", e.target.value)} />
+        <label style={s.label}>Date</label>
+        <input style={s.input} type="date" value={form.date} onChange={e => set("date", e.target.value)} />
+
+        <label style={s.label}>Surface</label>
+        <div style={{ ...s.chipRow, marginBottom: 14 }}>
+          {SURFACES.map(sf => <button key={sf} style={s.chip(form.surface === sf)} onClick={() => set("surface", sf)}>{sf}</button>)}
+        </div>
+
+        <label style={s.label}>Match Format</label>
+        <div style={{ ...s.chipRow, marginBottom: 14 }}>
+          {FORMATS.map(f => <button key={f} style={{ ...s.chip(form.format === f), fontSize: 12, padding: "6px 10px" }} onClick={() => set("format", f)}>{f}</button>)}
+        </div>
+
+        {canSuperTie && (
+          <div style={{ background: `${ACCENT}15`, border: `1px solid ${ACCENT}40`, borderRadius: 8, padding: "8px 12px", marginBottom: 14 }}>
+            <div style={{ fontSize: 11, color: ACCENT, fontWeight: 700 }}>ℹ️ Super Tie-Break Option</div>
+            <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>When the score reaches 1 set all, you will be automatically prompted to choose between Super Tie-Break (first to 10) or a normal deciding set.</div>
+          </div>
+        )}
+
+        <label style={{ ...s.label, marginTop: 4 }}>
+          Conditions <span style={{ color: MUTED, fontWeight: 400, fontSize: 10, textTransform: "none", letterSpacing: 0 }}>(optional — can also be edited on the Report tab)</span>
+        </label>
+        <textarea style={{ ...s.input, height: 60, resize: "none", marginBottom: 20 }}
+          placeholder="e.g. Sunny, windy 25 km/h, 28°C · First round · Indoor conditions..."
+          value={form.conditions}
+          onChange={e => set("conditions", e.target.value)} />
+
+        <button onClick={() => valid && onStart(form)} style={{ ...s.btn(COURT_GREEN, !valid), width: "100%", padding: "14px 0", fontSize: 16, borderRadius: 10 }}>
+          ▶ Start Tagging Match
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── SCORE BANNER ─────────────────────────────────────────────────────────────}
+
+// ─── SCORE BANNER ─────────────────────────────────────────────────────────────
+function ScoreBanner({ setup, score, matchTime, T = THEMES.original }) {
+  const { sets, games, points, server, matchWinner, superTieBreak } = score;
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!matchTime.start || matchTime.end) return;
+    const id = setInterval(() => setElapsed(Date.now() - matchTime.start), 1000);
+    return () => clearInterval(id);
+  }, [matchTime.start, matchTime.end]);
+
+  return (
+    <div style={{ background: T.scoreBg, borderBottom: `2px solid ${T.headerBorder}`, flexShrink: 0, fontFamily: T.fontBody }}>
+      {[{ pid: "p1", name: setup.player1 }, { pid: "p2", name: setup.player2 }].map(({ pid, name }) => (
+        <div key={pid} style={{ display: "flex", alignItems: "center", padding: "5px 14px", gap: 8 }}>
+          <div style={{ width: 8, height: 8, borderRadius: "50%", background: server === pid ? ACCENT : "transparent", flexShrink: 0 }} />
+          <div style={{ display: "flex", flexDirection: "column", width: 170 }}>
+            <div style={{ fontWeight: 700, fontSize: 13, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: T.fontBody }}>{name}</div>
+            <div style={{ display: "flex", gap: 5, marginTop: 2 }}>
+              {setup[pid === "p1" ? "p1utr" : "p2utr"] && (
+                <span style={{ fontSize: 9, fontWeight: 700, color: T.accent, background: T.accent + "18", border: `1px solid ${T.accent}40`, borderRadius: 4, padding: "1px 5px" }}>
+                  UTR {setup[pid === "p1" ? "p1utr" : "p2utr"]}
+                </span>
+              )}
+              {setup[pid === "p1" ? "p1hand" : "p2hand"] && (
+                <span style={{ fontSize: 9, fontWeight: 700, color: T.accentAlt, background: T.accentAlt + "18", border: `1px solid ${T.accentAlt}40`, borderRadius: 4, padding: "1px 5px" }}>
+                  {setup[pid === "p1" ? "p1hand" : "p2hand"] === "Left" ? "🤚 Left" : "✊ Right"}
+                </span>
+              )}
+            </div>
+          </div>
+          {sets.map((st, i) => <div key={i} style={{ background: CARD2, borderRadius: 5, padding: "2px 7px", fontSize: 14, fontWeight: 800, color: ACCENT, minWidth: 24, textAlign: "center" }}>{st[pid]}</div>)}
+          <div style={{ background: COURT_GREEN, borderRadius: 5, padding: "2px 9px", fontSize: 14, fontWeight: 900, color: WHITE, minWidth: 28, textAlign: "center" }}>{games[pid]}</div>
+          <div style={{ background: pid === "p1" ? "#1a3a6e" : "#3a1a1a", borderRadius: 7, padding: "3px 12px", fontSize: 18, fontWeight: 900, color: pid === "p1" ? "#7eb3ff" : "#ff8080", minWidth: 42, textAlign: "center" }}>{points[pid]}</div>
+          {matchWinner === pid && <span style={{ color: ACCENT, fontWeight: 800, fontSize: 12 }}>🏆 WON</span>}
+          {superTieBreak && <span style={{ fontSize: 10, color: ACCENT, fontWeight: 700 }}>Super TB</span>}
+        </div>
+      ))}
+      <div style={{ padding: "2px 14px 4px", display: "flex", gap: 12, alignItems: "center" }}>
+        <span style={{ fontSize: 11, color: MUTED }}>
+          ⏱ {matchTime.start ? fmtDuration(matchTime.end ? matchTime.end - matchTime.start : elapsed) : "Not started"}
+        </span>
+        {superTieBreak && <span style={{ fontSize: 10, color: ACCENT, fontWeight: 700 }}>🔥 First to 10</span>}
+      </div>
+    </div>
+  );
+}
+
+// ─── SHOT PICKER ─────────────────────────────────────────────────────────────
+function ShotPicker({ value, onChange, accentColor = "#1a5276", label }) {
+  return (
+    <div style={{ marginTop: 6 }}>
+      {label && (
+        <div style={{ fontSize: 9, color: accentColor, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase", marginBottom: 6 }}>
+          {label}
+        </div>
+      )}
+      {SHOT_GROUPS.map(({ group, color, shots }) => (
+        <div key={group} style={{ marginBottom: 7 }}>
+          <div style={{ fontSize: 8, color: MUTED, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 4, display: "flex", alignItems: "center", gap: 5 }}>
+            <div style={{ width: 8, height: 8, borderRadius: "50%", background: color, flexShrink: 0 }} />
+            {group}
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+            {shots.map(shot => {
+              const active = value === shot;
+              return (
+                <button
+                  key={shot}
+                  onClick={() => onChange(value === shot ? null : shot)}
+                  style={{
+                    padding: "6px 11px",
+                    borderRadius: 8,
+                    fontSize: 12,
+                    fontWeight: active ? 700 : 500,
+                    cursor: "pointer",
+                    border: `2px solid ${active ? color : "#1e3a5f"}`,
+                    background: active ? color : "transparent",
+                    color: active ? WHITE : MUTED,
+                    transition: "all 0.15s",
+                    lineHeight: 1,
+                  }}
+                >
+                  {shot}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+      {value && (
+        <div style={{ fontSize: 10, color: ACCENT, fontWeight: 700, marginTop: 2 }}>
+          ✓ {value}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── SCORE OVERWRITE MODAL ───────────────────────────────────────────────────
+function ScoreOverwriteModal({ setup, score, onApply, onClose, T = THEMES.original }) {
+  const { player1, player2 } = setup;
+  const POINT_SCORES = ["0","15","30","40","AD"];
+
+  const [ow, setOw] = useState({
+    p1sets: score.sets.map(s => s.p1),
+    p2sets: score.sets.map(s => s.p2),
+    p1games: score.games.p1,
+    p2games: score.games.p2,
+    p1points: score.points.p1,
+    p2points: score.points.p2,
+    server: score.server,
+    addSet: false,
+  });
+
+  const setV = (k, v) => setOw(p => ({ ...p, [k]: v }));
+
+  const numBtn = (val, current, onSet, color = T.accent) => (
+    <button key={val} onClick={() => onSet(val)} style={{
+      padding: "8px 0", minWidth: 38, borderRadius: T.chipRadius || 6, fontWeight: 700, fontSize: 14,
+      cursor: "pointer", transition: "all 0.15s",
+      border: `2px solid ${current === val ? color : T.border}`,
+      background: current === val ? color + "30" : "transparent",
+      color: current === val ? color : T.textMuted,
+      fontFamily: T.fontBody,
+    }}>{val}</button>
+  );
+
+  const handleApply = () => {
+    // Build corrected score object
+    const newSets = ow.p1sets.map((v, i) => ({ p1: Number(v)||0, p2: Number(ow.p2sets[i])||0 }));
+    const corrected = {
+      sets: newSets,
+      games: { p1: Number(ow.p1games)||0, p2: Number(ow.p2games)||0 },
+      points: { p1: ow.p1points, p2: ow.p2points },
+      currentSet: newSets.length - 1,
+      server: ow.server,
+      matchWinner: null,
+      superTieBreak: score.superTieBreak,
+    };
+    onApply(corrected);
+  };
+
+  const overlay = {
+    position: "fixed", inset: 0, background: "rgba(0,0,0,0.88)",
+    zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center",
+    padding: 20,
+  };
+  const modal = {
+    background: T.card, borderRadius: 16, padding: 24,
+    maxWidth: 520, width: "100%",
+    border: `2px solid ${T.danger}`,
+    boxShadow: `0 20px 60px rgba(0,0,0,0.8), 0 0 30px ${T.danger}30`,
+    fontFamily: T.fontBody,
+    maxHeight: "90vh", overflowY: "auto",
+  };
+
+  return (
+    <div style={overlay}>
+      <div style={modal}>
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 900, color: T.danger, fontFamily: T.fontDisplay }}>⚠️ Score Overwrite</div>
+            <div style={{ fontSize: 11, color: T.textMuted, marginTop: 3 }}>Adjust the score to the correct position, then continue tagging.</div>
+          </div>
+          <button onClick={onClose} style={{ background: "transparent", border: `1px solid ${T.border}`, color: T.textMuted, borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 14 }}>✕</button>
+        </div>
+
+        {/* Warning note */}
+        <div style={{ background: T.danger + "15", border: `1px solid ${T.danger}40`, borderRadius: 8, padding: "8px 12px", marginBottom: 16, fontSize: 11, color: T.danger }}>
+          ⚠️ This adjusts the live score display only. Points already logged remain in the dataset. Use this when you missed tagging one or several points and need to realign the score.
+        </div>
+
+        {/* Set scores */}
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 }}>Sets</div>
+          {ow.p1sets.map((_, si) => (
+            <div key={si} style={{ display: "grid", gridTemplateColumns: "80px 1fr 28px 1fr", gap: 8, alignItems: "center", marginBottom: 8 }}>
+              <div style={{ fontSize: 11, color: T.textMuted }}>Set {si+1}</div>
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                {[0,1,2,3,4,5,6,7].map(v => numBtn(v, Number(ow.p1sets[si]), val => setOw(p => { const a=[...p.p1sets]; a[si]=val; return {...p,p1sets:a}; }), ACCENT))}
+              </div>
+              <div style={{ fontSize: 12, color: T.textMuted, textAlign: "center" }}>—</div>
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                {[0,1,2,3,4,5,6,7].map(v => numBtn(v, Number(ow.p2sets[si]), val => setOw(p => { const a=[...p.p2sets]; a[si]=val; return {...p,p2sets:a}; }), ORANGE))}
+              </div>
+            </div>
+          ))}
+          <button
+            onClick={() => setOw(p => ({ ...p, p1sets: [...p.p1sets, 0], p2sets: [...p.p2sets, 0] }))}
+            style={{ fontSize: 11, color: T.accentAlt, background: "transparent", border: `1px dashed ${T.accentAlt}60`, borderRadius: 6, padding: "4px 12px", cursor: "pointer", marginTop: 4 }}>
+            + Add Set
+          </button>
+          {ow.p1sets.length > 1 && (
+            <button
+              onClick={() => setOw(p => ({ ...p, p1sets: p.p1sets.slice(0,-1), p2sets: p.p2sets.slice(0,-1) }))}
+              style={{ fontSize: 11, color: T.danger, background: "transparent", border: `1px dashed ${T.danger}60`, borderRadius: 6, padding: "4px 12px", cursor: "pointer", marginTop: 4, marginLeft: 8 }}>
+              − Remove Last Set
+            </button>
+          )}
+        </div>
+
+        {/* Current game score */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 10, alignItems: "start", marginBottom: 14 }}>
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: ACCENT, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 6 }}>{player1} — Games</div>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              {[0,1,2,3,4,5,6,7].map(v => numBtn(v, ow.p1games, val => setV("p1games", val), ACCENT))}
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: T.textMuted, paddingTop: 26, textAlign: "center" }}>—</div>
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: ORANGE, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 6 }}>{player2} — Games</div>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              {[0,1,2,3,4,5,6,7].map(v => numBtn(v, ow.p2games, val => setV("p2games", val), ORANGE))}
+            </div>
+          </div>
+        </div>
+
+        {/* Current point score */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 10, alignItems: "start", marginBottom: 14 }}>
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: ACCENT, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 6 }}>{player1} — Points</div>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              {POINT_SCORES.map(v => numBtn(v, ow.p1points, val => setV("p1points", val), ACCENT))}
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: T.textMuted, paddingTop: 26, textAlign: "center" }}>—</div>
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: ORANGE, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 6 }}>{player2} — Points</div>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              {POINT_SCORES.map(v => numBtn(v, ow.p2points, val => setV("p2points", val), ORANGE))}
+            </div>
+          </div>
+        </div>
+
+        {/* Server */}
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 }}>Current Server</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            {[["p1", player1], ["p2", player2]].map(([pid, name]) => (
+              <button key={pid} onClick={() => setV("server", pid)} style={{
+                flex: 1, padding: "10px 0", borderRadius: T.chipRadius || 8, fontWeight: 700, fontSize: 14,
+                cursor: "pointer", fontFamily: T.fontDisplay,
+                border: `2px solid ${ow.server === pid ? T.accent : T.border}`,
+                background: ow.server === pid ? T.accent + "25" : "transparent",
+                color: ow.server === pid ? T.accent : T.textMuted,
+              }}>
+                {ow.server === pid ? "🎾 " : ""}{name}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Action buttons */}
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={onClose} style={{ flex: 1, padding: "12px 0", borderRadius: T.btnRadius || 10, fontWeight: 700, fontSize: 14, cursor: "pointer", border: `1px solid ${T.border}`, background: "transparent", color: T.textMuted, fontFamily: T.fontBody }}>
+            Cancel
+          </button>
+          <button onClick={handleApply} style={{ flex: 2, padding: "12px 0", borderRadius: T.btnRadius || 10, fontWeight: 800, fontSize: 15, cursor: "pointer", border: `2px solid ${T.danger}`, background: T.danger + "25", color: T.danger, fontFamily: T.fontDisplay, letterSpacing: 1 }}>
+            ⚠️ Apply Score Correction
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── TAG PANEL ────────────────────────────────────────────────────────────────
+const EMPTY_TAG = {
+  serveType: null, serveDir: null, serveSide: null, serveZone: null, serveFault: null,
+  returnHand: null, returnLandZone: null,
+  servePlusOne: null, returnPlusOne: null,
+  rallyLength: null, outcome: null, shotType: null, errorShot: null,
+  netApproach: false, pressurePoint: false, pointWinner: null,
+};
+
+function StepHeader({ num, label, color = "#5abaff", fontFamily }) {
+  return (
+    <div style={{ fontSize: 10, fontWeight: 800, color, letterSpacing: 2, textTransform: "uppercase", marginBottom: 6, fontFamily: fontFamily || "inherit", display: "flex", alignItems: "center", gap: 5 }}>
+      <span style={{ opacity: 0.7 }}>{num}</span>
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES.original }) {
+  const { player1, player2 } = setup;
+  const { server } = score;
+  const setT = (k, v) => setTag(p => ({ ...p, [k]: v }));
+
+  const inFaultMode = tag.serveType === "1st Serve" && !!tag.serveFault;
+  const isError = tag.outcome === "Forced Error" || tag.outcome === "Unforced Error";
+  const isWinner = !isError && (tag.outcome === "Winner" || tag.outcome === "Ace" || tag.outcome === "Let" || !tag.outcome);
+  const noRally = tag.outcome === "Ace" || tag.outcome === "Double Fault";
+  const required = tag.serveType && tag.serveDir && tag.rallyLength && tag.outcome && tag.pointWinner;
+
+  // Auto-derive serve side from current game score (no manual input needed)
+  const autoServeSide = deriveServeSide(score.points);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+
+      {/* Server display */}
+      <div style={{ padding: "6px 12px", background: T.bgDeep, borderBottom: `1px solid ${T.border}`, flexShrink: 0, backgroundImage: T.pattern, backgroundSize: T.patternBg }}>
+        <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: 2, color: T.textMuted, textTransform: "uppercase", marginBottom: 5, fontFamily: T.fontBody }}>Serving</div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[{ pid: "p1", name: player1 }, { pid: "p2", name: player2 }].map(({ pid, name }) => (
+            <div key={pid} style={{
+              padding: "6px 11px", borderRadius: T.chipRadius, fontSize: 13, fontWeight: 700,
+              border: `2px solid ${server === pid ? T.primary : T.border}`,
+              background: server === pid ? T.primary + "25" : "transparent",
+              color: server === pid ? T.primary2 : T.textMuted,
+              flex: 1, textAlign: "center", fontFamily: T.fontDisplay,
+            }}>
+              {server === pid ? (T.prefix || "🎾 ") : ""}{name}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ① SERVE */}
+      <div style={{ ...s.tagSection, background: T.bgDeep, borderBottom: `1px solid ${T.border}`, backgroundImage: T.pattern, backgroundSize: T.patternBg }}>
+        <StepHeader num="①" label="Serve" fontFamily={T.fontDisplay} color="#5abaff" />
+
+        <div style={{ marginBottom: 7 }}>
+          <div style={s.sectionLabel}>Type</div>
+          <div style={s.chipRow}>
+            {SERVE_TYPES.map(o => (
+              <button key={o} style={s.chip(tag.serveType === o, COURT_GREEN)}
+                onClick={() => setTag(p => ({ ...p, serveType: p.serveType === o ? null : o, serveFault: null }))}>
+                {o}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 6 }}>
+          <div style={s.sectionLabel}>Direction</div>
+          <div style={s.chipRow}>
+            {SERVE_DIRS.map(o => (
+              <button key={o} style={{ ...s.chip(tag.serveDir === o, "#1a5276"), flex: 1, textAlign: "center" }}
+                onClick={() => setT("serveDir", tag.serveDir === o ? null : o)}>{o}</button>
+            ))}
+          </div>
+        </div>
+
+        {/* Court zone picker */}
+        <CourtZonePicker side={autoServeSide} value={tag.serveZone} onChange={v => setT("serveZone", v)} />
+        <div style={{ fontSize: 9, color: MUTED, textAlign: "center", marginTop: 3 }}>
+          Auto: <span style={{ color: autoServeSide === "Deuce" ? "#7eb3ff" : ACCENT, fontWeight: 700 }}>{autoServeSide} Side</span>
+        </div>
+
+        {/* 1st serve fault */}
+        {tag.serveType === "1st Serve" && (
+          <div style={{ marginTop: 8 }}>
+            <button
+              onClick={() => setTag(p => ({ ...p, serveFault: p.serveFault ? null : "?", pointWinner: p.serveFault ? p.pointWinner : null, outcome: p.serveFault ? p.outcome : null }))}
+              style={{ width: "100%", padding: "8px 0", borderRadius: 8, fontWeight: 800, fontSize: 12, cursor: "pointer", border: `2px solid ${inFaultMode ? DANGER : "#3a1a1a"}`, background: inFaultMode ? `${DANGER}22` : "transparent", color: inFaultMode ? DANGER : "#c06060", transition: "all 0.15s" }}>
+              {inFaultMode ? "⚡ FAULT — choose type ↓" : "⚡ Mark as 1st Serve Fault"}
+            </button>
+            {inFaultMode && (
+              <div style={{ marginTop: 6 }}>
+                <div style={{ fontSize: 9, color: DANGER, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase", marginBottom: 4 }}>Fault Type</div>
+                <div style={s.chipRow}>
+                  {SERVE_FAULT_TYPES.map(ft => (
+                    <button key={ft} style={{ padding: "6px 10px", borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer", border: `2px solid ${tag.serveFault === ft ? DANGER : "#3a1a1a"}`, background: tag.serveFault === ft ? DANGER : "transparent", color: tag.serveFault === ft ? WHITE : "#c06060" }}
+                      onClick={() => setT("serveFault", ft)}>{ft}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ② RETURN */}
+      {!inFaultMode && (
+        <div style={{ ...s.tagSection, background: T.bgDeep, borderBottom: `1px solid ${T.border}` }}>
+          <StepHeader num="②" label="Return" fontFamily={T.fontDisplay} color="#5aff9a" />
+          <div style={{ marginBottom: 6 }}>
+            <div style={s.sectionLabel}>Hand</div>
+            <div style={s.chipRow}>
+              {RETURN_HANDS.map(h => (
+                <button key={h} style={{ ...s.chip(tag.returnHand === h, PURPLE), flex: 1, textAlign: "center" }}
+                  onClick={() => setT("returnHand", tag.returnHand === h ? null : h)}>{h}</button>
+              ))}
+            </div>
+          </div>
+          <div style={s.sectionLabel}>Landing Zone</div>
+          <ReturnLandPicker value={tag.returnLandZone} onChange={v => setT("returnLandZone", v)} />
+        </div>
+      )}
+
+      {/* ③ SERVE +1 */}
+      {!inFaultMode && !noRally && (
+        <div style={{ ...s.tagSection, background: T.bgDeep, borderBottom: `1px solid ${T.border}` }}>
+          <StepHeader num="③" label="Serve +1" fontFamily={T.fontDisplay} color="#5ab8ff" />
+          <div style={s.chipRow}>
+            {["Forehand","Backhand","Volley","Drop Shot","N/A"].map(o => (
+              <button key={o} style={{ ...s.chip(tag.servePlusOne === o, NAVY), flex: 1, textAlign: "center" }}
+                onClick={() => setT("servePlusOne", tag.servePlusOne === o ? null : o)}>{o}</button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ④ RETURN +1 */}
+      {!inFaultMode && !noRally && (
+        <div style={{ ...s.tagSection, background: T.bgDeep, borderBottom: `1px solid ${T.border}` }}>
+          <StepHeader num="④" label="Return +1" fontFamily={T.fontDisplay} color="#5affc8" />
+          <div style={s.chipRow}>
+            {["Forehand","Backhand","Volley","N/A"].map(o => (
+              <button key={o} style={{ ...s.chip(tag.returnPlusOne === o, TEAL), flex: 1, textAlign: "center" }}
+                onClick={() => setT("returnPlusOne", tag.returnPlusOne === o ? null : o)}>{o}</button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ⑤ OUTCOME */}
+      {!inFaultMode && (
+        <div style={s.tagSection}>
+          <StepHeader num="⑤" label="Outcome" fontFamily={T.fontDisplay} color="#ffaa5a" />
+          <div style={s.chipRow}>
+            {OUTCOMES.map(o => (
+              <button key={o} style={s.chip(tag.outcome === o, DANGER)}
+                onClick={() => setTag(p => ({ ...p, outcome: p.outcome === o ? null : o, errorShot: (o === "Forced Error" || o === "Unforced Error") ? p.errorShot : null, shotType: (o === "Forced Error" || o === "Unforced Error") ? null : p.shotType }))}>
+                {o}
+              </button>
+            ))}
+          </div>
+          {isError && (
+            <div style={{ marginTop: 7 }}>
+              <div style={{ fontSize: 9, color: ORANGE, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase", marginBottom: 4 }}>Error Shot Type</div>
+              <div style={s.chipRow}>
+                {SHOT_TYPES.map(o => (
+                  <button key={o} style={{ padding: "5px 9px", borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer", border: `2px solid ${tag.errorShot === o ? ORANGE : "#3a2010"}`, background: tag.errorShot === o ? ORANGE : "transparent", color: tag.errorShot === o ? WHITE : "#c08060" }}
+                    onClick={() => setT("errorShot", tag.errorShot === o ? null : o)}>{o}</button>
+                ))}
+              </div>
+            </div>
+          )}
+          {isWinner && (
+            <div style={{ marginTop: 7 }}>
+              <div style={{ fontSize: 9, color: "#7eb3ff", fontWeight: 700, letterSpacing: 2, textTransform: "uppercase", marginBottom: 4 }}>Winning Shot</div>
+              <div style={s.chipRow}>
+                {SHOT_TYPES.map(o => (
+                  <button key={o} style={s.chip(tag.shotType === o, "#1a5276")}
+                    onClick={() => setT("shotType", tag.shotType === o ? null : o)}>{o}</button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Net + Pressure toggles */}
+      <Toggle label="Net Approach" value={tag.netApproach} onChange={v => setT("netApproach", v)} />
+      {!inFaultMode && (
+        <Toggle label="🔴 Pressure Point" sub="Break pt · Set pt · Match pt · Deuce · 30-40" value={tag.pressurePoint} onChange={v => setT("pressurePoint", v)} activeColor="#c0392b" />
+      )}
+
+      {/* ⑥ RALLY LENGTH — last */}
+      {!inFaultMode && (
+        <div style={s.tagSection}>
+          <StepHeader num="⑥" label="Rally Length (shots)" color={MUTED} />
+          <div style={s.chipRow}>
+            {RALLY_RANGES.map(o => (
+              <button key={o} style={{ ...s.chip(tag.rallyLength === o, "#6e2f10"), flex: 1, textAlign: "center", fontWeight: 800, fontSize: 14 }}
+                onClick={() => setT("rallyLength", tag.rallyLength === o ? null : o)}>{o}</button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ⑦ POINT WINNER */}
+      {!inFaultMode && (
+        <div style={s.tagSection}>
+          <StepHeader num="⑦" label="Point Winner" fontFamily={T.fontDisplay} color={ACCENT} />
+          <div style={s.chipRow}>
+            {[{ pid: "p1", name: player1 }, { pid: "p2", name: player2 }].map(({ pid, name }) => (
+              <button key={pid} style={{ ...s.chip(tag.pointWinner === pid, ACCENT), flex: 1, textAlign: "center", color: tag.pointWinner === pid ? "#000" : MUTED, fontSize: 14, fontWeight: 800 }}
+                onClick={() => setT("pointWinner", tag.pointWinner === pid ? null : pid)}>{name}</button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Actions */}
+      <div style={{ ...s.actionBar, flexShrink: 0, marginTop: "auto" }}>
+        <button style={{ ...s.btn(T.danger + "60" || "#7f3f1e", !points.length), background: !points.length ? T.card2 : T.danger + "40", border: `1px solid ${T.danger}`, color: T.danger, borderRadius: T.btnRadius, fontFamily: T.fontBody }} onClick={onUndo}>↩ Undo</button>
+        {inFaultMode ? (
+          <button
+            style={{ ...s.btn(tag.serveFault && tag.serveFault !== "?" ? DANGER : "#3a1a1a", !tag.serveFault || tag.serveFault === "?"), flex: 2 }}
+            disabled={!tag.serveFault || tag.serveFault === "?"}
+            onClick={() => setTag(() => ({ ...EMPTY_TAG, serveType: "2nd Serve", serveSide: tag.serveSide }))}>
+            ⚡ Fault → 2nd Serve
+          </button>
+        ) : (
+          <button style={{ flex: 2, padding: "12px 0", borderRadius: T.btnRadius, fontWeight: 800, fontSize: 15, cursor: !required ? "not-allowed" : "pointer", border: `2px solid ${required ? T.accent : T.border}`, background: required ? T.accent + "25" : "transparent", color: required ? T.accent : T.textMuted, opacity: !required ? 0.5 : 1, transition: "all 0.15s", fontFamily: T.fontDisplay, letterSpacing: 1 }} onClick={onLog} disabled={!required}>
+            ✓ Log Point ({points.length + 1})
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── POINT LOG TABLE ──────────────────────────────────────────────────────────
+function PointLog({ points, setup }) {
+  const getName = pid => pid === "p1" ? setup.player1 : setup.player2;
+  return (
+    <div style={{ flex: 1, overflowY: "auto", padding: "6px 10px" }}>
+      <div style={{ fontSize: 11, color: MUTED, marginBottom: 5, fontWeight: 700 }}>{points.length} points logged</div>
+      {!points.length && <div style={{ textAlign: "center", color: MUTED, marginTop: 40, fontSize: 13 }}>No points logged yet.</div>}
+      {[...points].reverse().map((p, i) => (
+        <div key={p.id} style={{ display: "grid", gridTemplateColumns: "22px 72px 46px 38px 44px 46px 72px 72px 20px 20px", gap: 3, alignItems: "center", padding: "5px 5px", borderRadius: 5, marginBottom: 2, background: i % 2 === 0 ? CARD2 : "transparent", fontSize: 11, color: MUTED }}>
+          <span style={{ color: ACCENT, fontWeight: 700 }}>{points.length - i}</span>
+          <span style={{ color: WHITE, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{getName(p.server)}</span>
+          <span>{p.serveType?.replace(" Serve","")}</span>
+          <span>{p.serveDir}</span>
+          <span style={{ color: p.serveFault && p.serveFault !== "?" ? DANGER : MUTED }}>{p.serveFault && p.serveFault !== "?" ? p.serveFault : (p.returnHand ? p.returnHand.slice(0,2) : "—")}</span>
+          <span>{p.rallyLength || "—"}</span>
+          <span style={{ color: p.outcome === "Winner" || p.outcome === "Ace" ? "#52c41a" : p.outcome?.includes("Error") || p.outcome === "Double Fault" ? DANGER : MUTED, fontSize: 10 }}>
+            {p.outcome ? (p.errorShot ? `${p.outcome.includes("Un") ? "UE" : "FE"}-${p.errorShot.slice(0,3)}` : p.outcome) : "—"}
+          </span>
+          <span style={{ color: ACCENT, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{getName(p.pointWinner)}</span>
+          <span>{p.netApproach ? "🔝" : ""}</span>
+          <span>{p.pressurePoint ? "🔴" : ""}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── STATS / REPORT SCREEN ────────────────────────────────────────────────────
+function StatsScreen({ points, setup, score, matchTime }) {
+  const stats = calcStats(points);
+  const { player1, player2 } = setup;
+  const duration = matchTime.start && matchTime.end ? matchTime.end - matchTime.start : null;
+  const [repTab, setRepTab] = useState("overview");
+
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{ display: "flex", background: "#0a1628", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 }}>
+        {[["overview","Overview"],["serve","Serve Zones"],["return","Return"],["rally","Rally & BP"]].map(([k, label]) => (
+          <button key={k} onClick={() => setRepTab(k)} style={{ flex: 1, padding: "7px 0", fontSize: 11, fontWeight: 700, cursor: "pointer", color: repTab === k ? ACCENT : MUTED, borderBottom: repTab === k ? `2px solid ${ACCENT}` : "2px solid transparent", background: "transparent", border: "none" }}>{label}</button>
+        ))}
+      </div>
+
+      <div style={{ flex: 1, overflowY: "auto", padding: 12 }}>
+        {/* Match summary card always visible */}
+        <div style={{ ...s.statCard, marginBottom: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 15, color: WHITE }}>{player1} <span style={{ color: MUTED }}>vs</span> {player2}</div>
+              <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>{setup.surface} · {setup.date}{setup.tournament ? ` · ${setup.tournament}` : ""}</div>
+              <div style={{ display: "flex", gap: 12, marginTop: 6, flexWrap: "wrap" }}>
+                {(setup.p1utr || setup.p1hand) && (
+                  <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: ACCENT }}>{player1}:</span>
+                    {setup.p1utr && <span style={{ fontSize: 10, color: ACCENT, background: `${ACCENT}18`, border: `1px solid ${ACCENT}40`, borderRadius: 4, padding: "1px 6px" }}>UTR {setup.p1utr}</span>}
+                    {setup.p1hand && <span style={{ fontSize: 10, color: MUTED, background: "#1a2a3a", border: "1px solid #1e3a5f", borderRadius: 4, padding: "1px 6px" }}>{setup.p1hand === "Left" ? "🤚 Left" : "✊ Right"}</span>}
+                  </div>
+                )}
+                {(setup.p2utr || setup.p2hand) && (
+                  <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: ORANGE }}>{player2}:</span>
+                    {setup.p2utr && <span style={{ fontSize: 10, color: ORANGE, background: `${ORANGE}18`, border: `1px solid ${ORANGE}40`, borderRadius: 4, padding: "1px 6px" }}>UTR {setup.p2utr}</span>}
+                    {setup.p2hand && <span style={{ fontSize: 10, color: MUTED, background: "#1a2a3a", border: "1px solid #1e3a5f", borderRadius: 4, padding: "1px 6px" }}>{setup.p2hand === "Left" ? "🤚 Left" : "✊ Right"}</span>}
+                  </div>
+                )}
+              </div>
+              {setup.conditions && <div style={{ fontSize: 11, color: MUTED, marginTop: 3, fontStyle: "italic" }}>📋 {setup.conditions}</div>}
+            </div>
+            <div style={{ textAlign: "right" }}>
+              {matchTime.start && <div style={{ fontSize: 11, color: MUTED }}>🕐 Start: {fmtTime(matchTime.start)}</div>}
+              {matchTime.end && <div style={{ fontSize: 11, color: MUTED }}>🕐 End: {fmtTime(matchTime.end)}</div>}
+              <div style={{ fontSize: 16, fontWeight: 800, color: ACCENT, marginTop: 2 }}>⏱ {duration ? fmtDuration(duration) : "In progress"}</div>
+            </div>
+          </div>
+        </div>
+
+        {!stats ? (
+          <div style={{ textAlign: "center", color: MUTED, marginTop: 40, fontSize: 14 }}>No points logged yet.</div>
+        ) : repTab === "overview" ? (
+          <>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+              <div style={{ fontWeight: 800, fontSize: 14, color: ACCENT }}>{player1}</div>
+              <div style={{ fontWeight: 700, color: MUTED, fontSize: 11 }}>{stats.total} pts</div>
+              <div style={{ fontWeight: 800, fontSize: 14, color: ORANGE }}>{player2}</div>
+            </div>
+            <div style={{ ...s.statCard, marginBottom: 10 }}>
+              <BarStat label="Points Won" p1={stats.p1pts} p2={stats.p2pts} />
+              <BarStat label="Winners" p1={stats.p1winners} p2={stats.p2winners} />
+              <BarStat label="Unforced Errors" p1={stats.p1ue} p2={stats.p2ue} />
+              <BarStat label="1st Serve Win %" p1={pct(stats.p1serve.firstWon, stats.p1serve.firstIn)} p2={pct(stats.p2serve.firstWon, stats.p2serve.firstIn)} />
+              <BarStat label="2nd Serve Win %" p1={pct(stats.p1serve.secondWon, stats.p1serve.secondIn)} p2={pct(stats.p2serve.secondWon, stats.p2serve.secondIn)} />
+              <BarStat label="Net Approaches" p1={stats.netP1.length} p2={stats.netP2.length} />
+              {(stats.p1sv.total > 0 || stats.p2sv.total > 0) && (
+                <BarStat label="Serve &amp; Volley" p1={stats.p1sv.total} p2={stats.p2sv.total} />
+              )}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <StatCard title="Aces" value={`${stats.p1serve.aces} / ${stats.p2serve.aces}`} sub={`${player1} / ${player2}`} />
+              <StatCard title="Double Faults" value={`${stats.p1serve.dfs} / ${stats.p2serve.dfs}`} color={DANGER} />
+            </div>
+          </>
+        ) : repTab === "serve" ? (
+          <>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+              <div style={{ fontWeight: 800, fontSize: 13, color: ACCENT }}>{player1}</div>
+              <div style={{ fontWeight: 700, color: MUTED, fontSize: 11 }}>SERVE ZONES</div>
+              <div style={{ fontWeight: 800, fontSize: 13, color: ORANGE }}>{player2}</div>
+            </div>
+            <div style={{ ...s.statCard, marginBottom: 10 }}>
+              <BarStat label="1st Serve Won %" p1={pct(stats.p1serve.firstWon, stats.p1serve.firstIn)} p2={pct(stats.p2serve.firstWon, stats.p2serve.firstIn)} />
+              <BarStat label="2nd Serve Won %" p1={pct(stats.p1serve.secondWon, stats.p1serve.secondIn)} p2={pct(stats.p2serve.secondWon, stats.p2serve.secondIn)} />
+              <BarStat label="Aces" p1={stats.p1serve.aces} p2={stats.p2serve.aces} />
+              <BarStat label="Double Faults" p1={stats.p1serve.dfs} p2={stats.p2serve.dfs} />
+            </div>
+
+            <div style={{ fontWeight: 800, fontSize: 13, color: ACCENT, marginBottom: 6 }}>{player1} — Serve Landing</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
+              <ServeZoneHeatmap title="Deuce Side" zones={stats.p1serve.deuceZones} side="Deuce" />
+              <ServeZoneHeatmap title="Ad Side" zones={stats.p1serve.adZones} side="Ad" />
+            </div>
+            <div style={{ fontWeight: 800, fontSize: 13, color: ORANGE, marginBottom: 6 }}>{player2} — Serve Landing</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+              <ServeZoneHeatmap title="Deuce Side" zones={stats.p2serve.deuceZones} side="Deuce" />
+              <ServeZoneHeatmap title="Ad Side" zones={stats.p2serve.adZones} side="Ad" />
+            </div>
+
+            {(Object.keys(stats.p1serve.faultTypes).length + Object.keys(stats.p2serve.faultTypes).length > 0) && (
+              <div style={{ ...s.statCard }}>
+                <div style={s.statTitle}>1st Serve Fault Types</div>
+                {SERVE_FAULT_TYPES.map(ft => {
+                  const a = stats.p1serve.faultTypes[ft] || 0;
+                  const b = stats.p2serve.faultTypes[ft] || 0;
+                  return (a + b) > 0 ? <BarStat key={ft} label={ft} p1={a} p2={b} /> : null;
+                })}
+              </div>
+            )}
+          </>
+        ) : repTab === "return" ? (
+          <>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+              <div style={{ fontWeight: 800, fontSize: 13, color: ACCENT }}>{player1}</div>
+              <div style={{ fontWeight: 700, color: MUTED, fontSize: 11 }}>RETURN</div>
+              <div style={{ fontWeight: 800, fontSize: 13, color: ORANGE }}>{player2}</div>
+            </div>
+            <div style={{ ...s.statCard, marginBottom: 10 }}>
+              {["Forehand","Backhand"].map(hand => {
+                const p1c = points.filter(p => p.server === "p2" && p.returnHand === hand).length;
+                const p2c = points.filter(p => p.server === "p1" && p.returnHand === hand).length;
+                return <BarStat key={hand} label={`${hand} Return`} p1={p1c} p2={p2c} />;
+              })}
+            </div>
+            <div style={{ fontWeight: 800, fontSize: 13, color: ACCENT, marginBottom: 6 }}>{player1} — Return Landing</div>
+            <ReturnZoneHeatmap title="" zones={stats.p1returnZones} />
+            <div style={{ fontWeight: 800, fontSize: 13, color: ORANGE, marginBottom: 6, marginTop: 12 }}>{player2} — Return Landing</div>
+            <ReturnZoneHeatmap title="" zones={stats.p2returnZones} />
+          </>
+        ) : repTab === "rally" ? (
+          <>
+            {/* Breakpoints */}
+            <div style={{ ...s.statCard, marginBottom: 10 }}>
+              <div style={{ ...s.statTitle, marginBottom: 10 }}>Break Points</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                {[["p1", player1, ACCENT], ["p2", player2, ORANGE]].map(([pid, name, col]) => {
+                  const bp = pid === "p1" ? stats.p1bp : stats.p2bp;
+                  return (
+                    <div key={pid} style={{ background: CARD2, borderRadius: 8, padding: "10px 12px" }}>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: col, marginBottom: 8 }}>{name}</div>
+                      <div style={{ fontSize: 12, color: TEXT, marginBottom: 3 }}>Chances: <b style={{ color: col }}>{bp.opp}</b></div>
+                      <div style={{ fontSize: 12, color: TEXT, marginBottom: 8 }}>Won: <b style={{ color: "#52c41a" }}>{bp.won}</b> <span style={{ color: MUTED }}>({pct(bp.won, bp.opp)}%)</span></div>
+                      <div style={{ fontSize: 12, color: TEXT, marginBottom: 3 }}>BP Faced: <b style={{ color: DANGER }}>{bp.faced}</b></div>
+                      <div style={{ fontSize: 12, color: TEXT }}>Saved: <b style={{ color: col }}>{bp.saved}</b> <span style={{ color: MUTED }}>({pct(bp.saved, bp.faced)}%)</span></div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            {/* Rally distribution */}
+            <div style={{ ...s.statCard, marginBottom: 10 }}>
+              <div style={s.statTitle}>Rally Length Distribution</div>
+              {RALLY_RANGES.map(r => {
+                const cnt = stats.rallyDist[r] || 0;
+                return (
+                  <div key={r} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7 }}>
+                    <span style={{ fontSize: 12, color: MUTED, width: 36, fontWeight: 700 }}>{r}</span>
+                    <div style={{ flex: 1, background: "#1e3a5f", borderRadius: 4, height: 8 }}>
+                      <div style={{ width: `${pct(cnt, stats.total)}%`, height: 8, background: COURT_GREEN, borderRadius: 4, transition: "width 0.3s" }} />
+                    </div>
+                    <span style={{ fontSize: 12, color: ACCENT, width: 22, textAlign: "right", fontWeight: 700 }}>{cnt}</span>
+                    <span style={{ fontSize: 11, color: MUTED, width: 34 }}>{pct(cnt, stats.total)}%</span>
+                  </div>
+                );
+              })}
+            </div>
+            {/* Net */}
+            <div style={{ ...s.statCard }}>
+              <div style={s.statTitle}>Net Approaches</div>
+              <BarStat label="Total Approaches" p1={stats.netP1.length} p2={stats.netP2.length} />
+              <BarStat label="Points Won at Net" p1={stats.netP1.filter(p => p.pointWinner === "p1").length} p2={stats.netP2.filter(p => p.pointWinner === "p2").length} />
+            </div>
+
+            {/* Serve & Volley */}
+            {(stats.p1sv.total > 0 || stats.p2sv.total > 0) && (
+              <div style={{ ...s.statCard, marginTop: 10 }}>
+                <div style={s.statTitle}>Serve &amp; Volley</div>
+                <BarStat label="Times Used" p1={stats.p1sv.total} p2={stats.p2sv.total} />
+                <BarStat label="Points Won" p1={stats.p1sv.won} p2={stats.p2sv.won} />
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
+                  {[["p1", setup.player1, ACCENT], ["p2", setup.player2, ORANGE]].map(([pid, name, col]) => {
+                    const sv = pid === "p1" ? stats.p1sv : stats.p2sv;
+                    return (
+                      <div key={pid} style={{ background: CARD2, borderRadius: 8, padding: "10px 12px", textAlign: "center" }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: col, marginBottom: 4 }}>{name}</div>
+                        <div style={{ fontSize: 24, fontWeight: 900, color: col }}>{sv.total}</div>
+                        <div style={{ fontSize: 11, color: MUTED }}>times</div>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: "#52c41a", marginTop: 4 }}>
+                          {sv.won}W / {sv.total - sv.won}L
+                        </div>
+                        <div style={{ fontSize: 11, color: MUTED }}>{sv.total > 0 ? pct(sv.won, sv.total) : 0}% win rate</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
+function App() {
+  const [setup, setSetup] = useState(null);
+  const [tab, setTab] = useState("tag");
+  const [tag, setTag] = useState(EMPTY_TAG);
+  const [points, setPoints] = useState([]);
+  const [score, setScore] = useState(null);
+  const [superTieAt11, setSuperTieAt11] = useState(false);
+  const [showSuperTieModal, setShowSuperTieModal] = useState(false);
+  const [matchTime, setMatchTime] = useState({ start: null, end: null });
+  const [conditions, setConditions] = useState("");
+  const [editCond, setEditCond] = useState(false);
+  const [themeId, setThemeId] = useState("original");
+  const T = THEMES[themeId] || THEMES.original;
+  const [showOverwrite, setShowOverwrite] = useState(false);
+
+  const canTriggerSuperTie = (fmt) => ["Best of 3","Best of 3 Short Sets"].includes(fmt);
+
+  const handleStart = (form) => {
+    setSetup(form);
+    setConditions(form.conditions || "");
+    setSuperTieAt11(false);
+    setShowSuperTieModal(false);
+    setScore(rebuildScore([], form.format, false));
+    setPoints([]);
+    setMatchTime({ start: Date.now(), end: null });
+    setTag(EMPTY_TAG);
+    setTab("tag");
+  };
+
+  const handleLog = () => {
+    if (!tag.pointWinner) return;
+    const newPoint = { ...tag, id: Date.now(), server: score.server, serveSide: deriveServeSide(score.points) };
+    const newPoints = [...points, newPoint];
+    setPoints(newPoints);
+    const newScore = rebuildScore(newPoints, setup.format, superTieAt11);
+    setScore(newScore);
+    // Detect 1-1: if a new set just started and it's the 3rd set, prompt for super tie-break
+    if (canTriggerSuperTie(setup.format) && !superTieAt11 && !showSuperTieModal) {
+      const p1sets = newScore.sets.filter((st, i) => i < newScore.currentSet && st.p1 > st.p2).length;
+      const p2sets = newScore.sets.filter((st, i) => i < newScore.currentSet && st.p2 > st.p1).length;
+      if (p1sets === 1 && p2sets === 1 && newScore.currentSet === 2 && !newScore.matchWinner) {
+        setShowSuperTieModal(true);
+      }
+    }
+    setTag({ ...EMPTY_TAG, serveType: tag.serveType === "1st Serve" ? "1st Serve" : null, serveSide: tag.serveSide });
+  };
+
+  const handleSuperTieDecision = (useSuperTie) => {
+    setSuperTieAt11(useSuperTie);
+    setShowSuperTieModal(false);
+    // Rebuild score with the new super tie decision
+    setScore(rebuildScore(points, setup.format, useSuperTie));
+  };
+
+  const handleUndo = () => {
+    if (!points.length) return;
+    const np = points.slice(0, -1);
+    setPoints(np);
+    setScore(rebuildScore(np, setup.format, superTieAt11));
+  };
+
+  const handleOverwriteApply = (correctedScore) => {
+    setScore(correctedScore);
+    setShowOverwrite(false);
+  };
+
+  const handleEndMatch = () => {
+    if (!matchTime.end) setMatchTime(prev => ({ ...prev, end: Date.now() }));
+    setTab("stats");
+  };
+
+  // Derived theme styles applied inline to root
+  const tApp = {
+    fontFamily: T.fontBody,
+    background: T.bg,
+    color: T.text,
+    minHeight: "100vh", width: "100%", display: "flex", flexDirection: "column", userSelect: "none",
+    backgroundImage: T.pattern || "none",
+    backgroundSize: T.patternBg || "auto",
+  };
+  const tHeader = {
+    background: T.headerBg,
+    padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between",
+    borderBottom: `2px solid ${T.headerBorder}`, flexShrink: 0,
+  };
+  const tCard = { background: T.card, border: `1px solid ${T.border}` };
+  const tChip = (active, color) => ({
+    padding: "6px 11px", borderRadius: T.chipRadius, fontSize: 13, fontWeight: active ? 700 : 500,
+    cursor: "pointer", border: `2px solid ${active ? (color||T.accent) : T.border}`,
+    background: active ? (color||T.accent) + "30" : "transparent",
+    color: active ? (color||T.accent) : T.textMuted, transition: "all 0.15s", lineHeight: 1,
+    fontFamily: T.fontBody,
+  });
+
+  if (!setup) return (
+    <div style={tApp}>
+      <GoogleFonts />
+      <div style={tHeader}>
+        <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: 1, color: T.primary2, fontFamily: T.fontDisplay }}>
+          {T.prefix || ""}TennisTag Pro
+        </div>
+        <div style={{ fontSize: 12, color: T.textMuted, fontFamily: T.fontBody }}>iPad Match Analysis System</div>
+      </div>
+      <SetupScreen onStart={handleStart} themeId={themeId} onThemeChange={setThemeId} T={T} />
+    </div>
+  );
+
+  const effectiveSetup = { ...setup, conditions };
+
+  return (
+    <div style={tApp}>
+      <GoogleFonts />
+      <div style={tHeader}>
+        <div style={{ fontSize: 20, fontWeight: 900, letterSpacing: 1, color: T.primary2, fontFamily: T.fontDisplay }}>
+          {T.prefix || ""}<span style={{ color: T.accent }}>Tennis</span>Tag Pro
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {setup.tournament && <span style={{ fontSize: 11, color: T.textMuted, fontFamily: T.fontBody }}>{setup.tournament}</span>}
+          <span style={{ background: T.accentAlt + "40", borderRadius: T.chipRadius, border: `1px solid ${T.accentAlt}`, padding: "2px 8px", fontSize: 11, fontWeight: 700, color: T.accentAlt }}>{setup.surface}</span>
+          <span style={{ fontSize: 11, color: T.textMuted }}>{setup.format}</span>
+          {/* Compact theme switcher */}
+          <ThemeSelector current={themeId} onSelect={setThemeId} compact />
+          {!matchTime.end && (
+            <>
+              <button
+                onClick={() => setShowOverwrite(true)}
+                title="Score Overwrite — correct a missed point"
+                style={{ background: "transparent", border: `1px solid ${T.danger}70`, color: T.danger, borderRadius: T.chipRadius, padding: "5px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: T.fontBody }}>
+                ⚠️ Score
+              </button>
+              <button onClick={handleEndMatch} style={{ background: T.danger, border: "none", color: T.white, borderRadius: T.chipRadius, padding: "5px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: T.fontBody }}>⏹ End</button>
+            </>
+          )}
+          <button onClick={() => { if (window.confirm("Start a new match?")) { setSetup(null); setPoints([]); }}} style={{ background: T.card2, border: `1px solid ${T.border}`, color: T.textMuted, borderRadius: T.chipRadius, padding: "5px 8px", cursor: "pointer", fontSize: 11 }}>New</button>
+        </div>
+      </div>
+
+      {score && <ScoreBanner setup={setup} score={score} matchTime={matchTime} T={T} />}
+
+      {/* Super Tie-Break modal — auto-appears at 1-1 */}
+      {showSuperTieModal && <SuperTieModal setup={setup} onDecide={handleSuperTieDecision} />}
+
+      {/* Score Overwrite modal */}
+      {showOverwrite && score && (
+        <ScoreOverwriteModal
+          setup={setup}
+          score={score}
+          onApply={handleOverwriteApply}
+          onClose={() => setShowOverwrite(false)}
+          T={T}
+        />
+      )}
+
+      {/* Conditions bar on stats tab */}
+      {tab === "stats" && (
+        <div style={{ background: T.card2, borderBottom: `1px solid ${T.border}`, padding: "5px 14px", flexShrink: 0 }}>
+          {editCond ? (
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input style={{ ...s.input, flex: 1, marginBottom: 0, padding: "6px 10px", fontSize: 13 }}
+                placeholder="Add conditions, weather notes..." value={conditions}
+                onChange={e => setConditions(e.target.value)} />
+              <button onClick={() => setEditCond(false)} style={{ background: COURT_GREEN, border: "none", color: WHITE, borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700, flexShrink: 0 }}>Done</button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 11, color: MUTED, fontStyle: "italic", flex: 1 }}>📋 {conditions || "No conditions noted — tap Edit to add"}</span>
+              <button onClick={() => setEditCond(true)} style={{ fontSize: 11, color: ACCENT, background: "transparent", border: `1px solid #1e3a5f`, borderRadius: 5, padding: "3px 8px", cursor: "pointer" }}>Edit</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div style={{ display: "flex", background: T.bgDeep, borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
+        {[["tag","🏷️ Tag"],["log","📋 Log"],["stats","📊 Report"]].map(([k, label]) => (
+          <button key={k} style={{
+            flex: 1, padding: "9px 0", textAlign: "center", fontSize: 12, fontWeight: 700,
+            cursor: "pointer",
+            color: tab === k ? T.accent : T.textMuted,
+            borderBottom: tab === k ? `3px solid ${T.accent}` : "3px solid transparent",
+            background: "transparent", border: "none", letterSpacing: 0.5, transition: "all 0.15s",
+            fontFamily: T.fontBody,
+          }} onClick={() => setTab(k)}>{label}</button>
+        ))}
+      </div>
+
+      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+
+        {tab === "tag" && (
+          <>
+            <div style={{ width: 410, background: CARD, borderRight: `1px solid #1e3a5f`, display: "flex", flexDirection: "column", overflowY: "auto", flexShrink: 0 }}>
+              <TagPanel setup={setup} score={score} tag={tag} setTag={setTag} onLog={handleLog} onUndo={handleUndo} points={points} T={T} />
+            </div>
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+              <div style={{ padding: "7px 10px", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 }}>
+                <span style={{ ...s.sectionLabel, marginBottom: 0 }}>Recent Points</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "22px 72px 46px 38px 44px 46px 72px 72px 20px 20px", gap: 3, padding: "4px 5px 4px 15px", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 }}>
+                {["#","Server","Type","Dir","Ret/Flt","Rally","Outcome","Winner","🔝","🔴"].map(h => (
+                  <span key={h} style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>{h}</span>
+                ))}
+              </div>
+              <PointLog points={points} setup={setup} />
+            </div>
+          </>
+        )}
+
+        {tab === "log" && (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div style={{ padding: "7px 10px", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 }}>
+              <span style={{ ...s.sectionLabel, marginBottom: 0 }}>Full Point Log — {points.length} pts</span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "24px 80px 44px 38px 44px 56px 52px 40px 40px 40px 42px 62px 75px 20px 20px", gap: 2, padding: "4px 8px", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 }}>
+              {["#","Server","Serve","Dir","Side","Zone","Fault","RH","Srv+1","Ret+1","Rally","Outcome","Winner","🔝","🔴"].map(h => (
+                <span key={h} style={{ fontSize: 8, color: MUTED, fontWeight: 700 }}>{h}</span>
+              ))}
+            </div>
+            <div style={{ flex: 1, overflowY: "auto", padding: "3px 8px" }}>
+              {[...points].reverse().map((p, i) => (
+                <div key={p.id} style={{ display: "grid", gridTemplateColumns: "24px 80px 44px 38px 44px 56px 52px 40px 40px 40px 42px 62px 75px 20px 20px", gap: 2, alignItems: "center", padding: "5px 0", borderBottom: `1px solid #1e3a5f18`, fontSize: 10, color: MUTED }}>
+                  <span style={{ color: ACCENT, fontWeight: 700 }}>{points.length - i}</span>
+                  <span style={{ color: WHITE, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.server === "p1" ? setup.player1 : setup.player2}</span>
+                  <span>{p.serveType?.replace(" Serve","") || "—"}</span>
+                  <span>{p.serveDir || "—"}</span>
+                  <span>{p.serveSide ? p.serveSide.slice(0,1) : "—"}</span>
+                  <span style={{ fontSize: 9 }}>{p.serveZone || "—"}</span>
+                  <span style={{ color: p.serveFault && p.serveFault !== "?" ? DANGER : MUTED, fontSize: 9 }}>{p.serveFault && p.serveFault !== "?" ? p.serveFault : "—"}</span>
+                  <span>{p.returnHand ? p.returnHand.slice(0,2) : "—"}</span>
+                  <span>{p.servePlusOne ? p.servePlusOne.slice(0,2) : "—"}</span>
+                  <span>{p.returnPlusOne ? p.returnPlusOne.slice(0,2) : "—"}</span>
+                  <span>{p.rallyLength || "—"}</span>
+                  <span style={{ color: p.outcome === "Winner" || p.outcome === "Ace" ? "#52c41a" : p.outcome?.includes("Error") || p.outcome === "Double Fault" ? DANGER : MUTED, fontSize: 9 }}>
+                    {p.outcome ? (p.errorShot ? `${p.outcome.includes("Un") ? "UE" : "FE"}-${p.errorShot.slice(0,3)}` : p.outcome.slice(0,8)) : "—"}
+                  </span>
+                  <span style={{ color: ACCENT, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.pointWinner === "p1" ? setup.player1 : setup.player2}</span>
+                  <span>{p.netApproach ? "✓" : ""}</span>
+                  <span>{p.pressurePoint ? "🔴" : ""}</span>
+                </div>
+              ))}
+            </div>
+            <div style={s.exportBar}>
+              <button style={{ ...s.btn(COURT_GREEN, !points.length), flex: 1 }} onClick={() => points.length && exportCSV(points, effectiveSetup)}>⬇ Export CSV</button>
+            </div>
+          </div>
+        )}
+
+        {tab === "stats" && (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <StatsScreen points={points} setup={effectiveSetup} score={score} matchTime={matchTime} />
+            <div style={s.exportBar}>
+              <button style={{ ...s.btn(COURT_GREEN, !points.length), flex: 1 }} onClick={() => points.length && exportCSV(points, effectiveSetup)}>⬇ Export CSV</button>
+              <button style={{ ...s.btn("#1a5276", !points.length), flex: 1 }} onClick={() => points.length && exportPDF(points, effectiveSetup, score, matchTime, conditions)}>📄 Export PDF</button>
+            </div>
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}
+
+// Mount the app
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(React.createElement(App));
+
+</script>
+
+<script>
+  // Hide loading screen once React mounts
+  window.addEventListener('load', function() {
+    setTimeout(function() {
+      var loader = document.getElementById('loading');
+      if (loader) loader.style.display = 'none';
+    }, 800);
+  });
+
+  // Prevent default touch behaviors that interfere with the app
+  document.addEventListener('touchmove', function(e) {
+    if (e.target.closest('[data-scroll]')) return;
+    // Allow scrolling inside scrollable containers
+  }, { passive: true });
+
+  // Lock orientation to landscape on supported devices
+  if (screen.orientation && screen.orientation.lock) {
+    screen.orientation.lock('landscape').catch(function() {});
+  }
+</script>
+</body>
+</html>
