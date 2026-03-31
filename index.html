@@ -586,106 +586,95 @@ function BarStat({ label, p1, p2 }) {
   );
 }
 
-// ─── COURT ZONE PICKER — server at bottom, serve travels up to land at top ────
-function CourtZonePicker({ side, value, onChange, serverName, returnerName }) {
-  // side = "Deuce" | "Ad"
-  // Deuce serve (server right of centre) → lands top-LEFT box (Ad landing box)
-  // Ad serve    (server left of centre)  → lands top-RIGHT box (Deuce landing box)
-  const [manualSide, setManualSide] = React.useState(null);
-  const activeSide = manualSide || side || "Deuce";
-  const isDeuce = activeSide === "Deuce";
-  const boxLabel = isDeuce ? "Ad box" : "Deuce box";
-  const serverX = isDeuce ? 215 : 125;
-  const sName = serverName || "Server";
+// ─── COURT ZONE PICKER — full court, flip button on diagram ─────────────────
+function CourtZonePicker({ side, value, onChange, serverName, returnerName, flipped, onFlip }) {
+  const isDeuce = (side || "Deuce") !== "Ad";
+  // flipped=false: server at bottom, serve travels UP, zones at TOP half
+  // flipped=true:  server at top,    serve travels DOWN, zones at BOTTOM half
+  const serverY   = flipped ? 28  : 243;
+  const serverLY  = flipped ? 18  : 258;
+  const retLY     = flipped ? 258 : 18;
+  const sName = serverName  || "Server";
   const rName = returnerName || "Returner";
+  const boxLabel = isDeuce ? "Ad box" : "Deuce box";
+  const serverX   = isDeuce ? 215 : 125;
 
-  // All zone definitions — top half of court
-  // viewBox 0 0 340 280: net at y=133, opponent service line at y=80
-  // Top-left box: x72-170, y80-133  |  Top-right box: x170-268, y80-133
-  // Deep = y20-80 (behind service line), Short = y80-133 (between svc line and net)
+  // Zone coords — always in the OPPONENT half (far side from server)
+  // When NOT flipped: server bottom → zones at top (y 12-133)
+  // When flipped:     server top    → zones at bottom (y 147-270)
+  const zy = flipped ? 147 : 12;   // deep row y
+  const my = flipped ? 195 : 80;   // mid row y (service line)
+  const zh = flipped ? 46  : 66;   // deep row height
+  const mh = flipped ? 46  : 51;   // mid row height
+  const svcLineY = flipped ? 195 : 80; // opponent service line
+
+  // Zone column definitions — depend on serve side
   const zonesLeft = [
-    { id:"Wide-Deep",  lbl:"Wide",  sub:"Deep",  x:73,  y:20, w:32, h:58 },
-    { id:"Body-Deep",  lbl:"Body",  sub:"Deep",  x:107, y:20, w:31, h:58 },
-    { id:"T-Deep",     lbl:"T",     sub:"Deep",  x:140, y:20, w:28, h:58 },
-    { id:"Wide-Short", lbl:"Wide",  sub:"Short", x:73,  y:80, w:32, h:51 },
-    { id:"Body-Short", lbl:"Body",  sub:"Short", x:107, y:80, w:31, h:51 },
-    { id:"T-Short",    lbl:"T",     sub:"Short", x:140, y:80, w:28, h:51 },
+    { id:"Wide-Deep",  lbl:"Wide", sub:"Deep",  x:73,  y:zy, w:32, h:zh },
+    { id:"Body-Deep",  lbl:"Body", sub:"Deep",  x:107, y:zy, w:31, h:zh },
+    { id:"T-Deep",     lbl:"T",    sub:"Deep",  x:140, y:zy, w:28, h:zh },
+    { id:"Wide-Short", lbl:"Wide", sub:"Short", x:73,  y:my, w:32, h:mh },
+    { id:"Body-Short", lbl:"Body", sub:"Short", x:107, y:my, w:31, h:mh },
+    { id:"T-Short",    lbl:"T",    sub:"Short", x:140, y:my, w:28, h:mh },
   ];
   const zonesRight = [
-    { id:"T-Deep",     lbl:"T",     sub:"Deep",  x:172, y:20, w:28, h:58 },
-    { id:"Body-Deep",  lbl:"Body",  sub:"Deep",  x:202, y:20, w:31, h:58 },
-    { id:"Wide-Deep",  lbl:"Wide",  sub:"Deep",  x:235, y:20, w:32, h:58 },
-    { id:"T-Short",    lbl:"T",     sub:"Short", x:172, y:80, w:28, h:51 },
-    { id:"Body-Short", lbl:"Body",  sub:"Short", x:202, y:80, w:31, h:51 },
-    { id:"Wide-Short", lbl:"Wide",  sub:"Short", x:235, y:80, w:32, h:51 },
+    { id:"T-Deep",     lbl:"T",    sub:"Deep",  x:172, y:zy, w:28, h:zh },
+    { id:"Body-Deep",  lbl:"Body", sub:"Deep",  x:202, y:zy, w:31, h:zh },
+    { id:"Wide-Deep",  lbl:"Wide", sub:"Deep",  x:235, y:zy, w:32, h:zh },
+    { id:"T-Short",    lbl:"T",    sub:"Short", x:172, y:my, w:28, h:mh },
+    { id:"Body-Short", lbl:"Body", sub:"Short", x:202, y:my, w:31, h:mh },
+    { id:"Wide-Short", lbl:"Wide", sub:"Short", x:235, y:my, w:32, h:mh },
   ];
   const activeZones = isDeuce ? zonesLeft : zonesRight;
-  const dimZones = isDeuce ? zonesRight : zonesLeft;
+  const dimZones    = isDeuce ? zonesRight : zonesLeft;
 
-  const handleSideOverride = (s) => {
-    setManualSide(manualSide === s ? null : s);
-    onChange(null); // clear zone when side changes
-  };
+  // Net and service line positions
+  const netY   = 133;
+  const netTop = flipped ? 192 : 129;   // net bar top
+  const activeLabelY = flipped ? (my + mh + 10) : (zy - 5);
 
   return (
     React.createElement('div', { style: { marginTop: 6 },}
-      /* Serve side buttons with player name */
-      , React.createElement('div', { style: { display: "flex", gap: 5, marginBottom: 6 },}
-        , ["Deuce","Ad"].map(s => {
-          const isActive = activeSide === s;
-          const isAuto = !manualSide && side === s;
-          return (
-            React.createElement('button', { key: s, onClick: () => handleSideOverride(s), style: {
-              flex: 1, padding: "7px 6px", borderRadius: 7, cursor: "pointer",
-              border: "2px solid " + (isActive ? (s === "Deuce" ? "#7eb3ff" : ACCENT) : "#1e3a5f"),
-              background: isActive ? (s === "Deuce" ? "#1a3a6e" : "#3a2a00") : "transparent",
-              transition: "all 0.15s", textAlign: "center",
-            },}
-              , React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: isActive ? (s === "Deuce" ? "#7eb3ff" : ACCENT) : MUTED },}, sName)
-              , React.createElement('div', { style: { fontSize: 9, color: isActive ? (s === "Deuce" ? "#5a93cf" : "#c8a030") : "#2a4a6a", marginTop: 1 },}
-                , s, " side" , isAuto ? " ✓auto" : ""
-              )
-            )
-          );
-        })
+      , React.createElement('div', { style: { fontSize: 9, color: MUTED, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 5 },}, "Landing Zone — "
+           , React.createElement('span', { style: { color: isDeuce ? "#7eb3ff" : ACCENT },}, side || "Deuce", " serve "  , "→", " " , boxLabel)
       )
-      /* Court SVG */
       , React.createElement('div', { style: { background: "#236b36", borderRadius: 6, padding: 5, border: "2px solid #145228" },}
-        , React.createElement('svg', { width: "100%", viewBox: "0 0 340 280"   , style: { display: "block", maxHeight: 180 },}
+        , React.createElement('svg', { width: "100%", viewBox: "0 0 340 280"   , style: { display: "block", maxHeight: 190 },}
           , React.createElement('rect', { width: "340", height: "280", fill: "#236b36",})
-          /* Outer boundary */
+          /* Court outer boundary */
           , React.createElement('rect', { x: "30", y: "10", width: "280", height: "260", fill: "none", stroke: "rgba(255,255,255,0.7)", strokeWidth: "1.5",})
           /* Singles sidelines */
           , React.createElement('line', { x1: "72", y1: "10", x2: "72", y2: "270", stroke: "rgba(255,255,255,0.65)", strokeWidth: "1.5",})
           , React.createElement('line', { x1: "268", y1: "10", x2: "268", y2: "270", stroke: "rgba(255,255,255,0.65)", strokeWidth: "1.5",})
+          /* Service lines */
+          , React.createElement('line', { x1: "72", y1: "80",  x2: "268", y2: "80",  stroke: "rgba(255,255,255,0.65)", strokeWidth: "1.2",})
+          , React.createElement('line', { x1: "72", y1: "200", x2: "268", y2: "200", stroke: "rgba(255,255,255,0.65)", strokeWidth: "1.2",})
           /* Centre service line */
-          , React.createElement('line', { x1: "170", y1: "133", x2: "170", y2: "80", stroke: "rgba(255,255,255,0.55)", strokeWidth: "1.5",})
-          /* Opponent service line (top) */
-          , React.createElement('line', { x1: "72", y1: "80", x2: "268", y2: "80", stroke: "rgba(255,255,255,0.7)", strokeWidth: "1.5",})
-          /* Server service line (bottom) — not shown in tagging but for proportion */
-          , React.createElement('line', { x1: "72", y1: "200", x2: "268", y2: "200", stroke: "rgba(255,255,255,0.35)", strokeWidth: "1",})
+          , React.createElement('line', { x1: "170", y1: "80", x2: "170", y2: "200", stroke: "rgba(255,255,255,0.5)", strokeWidth: "1.2",})
           /* Net */
           , React.createElement('rect', { x: "22", y: "129", width: "296", height: "8", fill: "rgba(255,255,255,0.12)", rx: "1",})
           , React.createElement('line', { x1: "22", y1: "133", x2: "318", y2: "133", stroke: "rgba(255,255,255,0.85)", strokeWidth: "3.5",})
           , React.createElement('text', { x: "170", y: "131", textAnchor: "middle", fontSize: "7", fill: "rgba(255,255,255,0.7)", letterSpacing: "3",}, "NET")
-          /* Returner label top */
-          , React.createElement('text', { x: "170", y: "55", textAnchor: "middle", fontSize: "10", fill: "rgba(255,255,255,0.22)", letterSpacing: "1",}, rName)
-          /* Server label bottom */
-          , React.createElement('text', { x: "170", y: "258", textAnchor: "middle", fontSize: "10", fill: "rgba(244,211,94,0.6)", letterSpacing: "1",}, sName)
+          /* Player labels */
+          , React.createElement('text', { x: "170", y: serverLY, textAnchor: "middle", fontSize: "10", fill: "rgba(244,211,94,0.65)", letterSpacing: "1",}, sName)
+          , React.createElement('text', { x: "170", y: retLY,    textAnchor: "middle", fontSize: "10", fill: "rgba(255,255,255,0.2)",  letterSpacing: "1",}, rName)
           /* Server dot */
-          , React.createElement('circle', { cx: serverX, cy: "243", r: "5", fill: ACCENT,})
+          , React.createElement('circle', { cx: serverX, cy: serverY, r: "5", fill: ACCENT,})
           /* Active box label */
-          , React.createElement('text', { x: isDeuce ? 121 : 219, y: "75", textAnchor: "middle", fontSize: "8", fill: isDeuce ? "#7eb3ff" : ACCENT, fontWeight: "500", letterSpacing: "0.5",}, boxLabel.toUpperCase())
+          , React.createElement('text', { x: isDeuce ? 121 : 219, y: activeLabelY, textAnchor: "middle", fontSize: "8",
+            fill: isDeuce ? "#7eb3ff" : ACCENT, fontWeight: "500", letterSpacing: "0.5",}
+            , boxLabel.toUpperCase()
+          )
           /* Active zones */
           , activeZones.map(z => {
             const sel = value === z.id;
             return (
-              React.createElement('g', { key: "a-"+z.x+z.y, onClick: () => onChange(value === z.id ? null : z.id), style: { cursor: "pointer" },}
+              React.createElement('g', { key: "a-"+z.x+"-"+z.y, onClick: () => onChange(value === z.id ? null : z.id), style: { cursor: "pointer" },}
                 , React.createElement('rect', { x: z.x, y: z.y, width: z.w, height: z.h, rx: "2",
                   fill: sel ? "rgba(244,211,94,0.6)" : "rgba(255,255,255,0.14)",
                   stroke: sel ? "#f4d35e" : "rgba(255,255,255,0.45)",
                   strokeWidth: sel ? "2" : "1.5",})
-                , React.createElement('text', { x: z.x+z.w/2, y: z.y+z.h/2-5, textAnchor: "middle", fontSize: "9",
+                , React.createElement('text', { x: z.x+z.w/2, y: z.y+z.h/2-4, textAnchor: "middle", fontSize: "9",
                   fill: sel ? "#000" : "rgba(255,255,255,0.9)", fontWeight: "500",}, z.lbl)
                 , React.createElement('text', { x: z.x+z.w/2, y: z.y+z.h/2+7, textAnchor: "middle", fontSize: "7",
                   fill: sel ? "#333" : "rgba(255,255,255,0.5)",}, z.sub)
@@ -694,9 +683,15 @@ function CourtZonePicker({ side, value, onChange, serverName, returnerName }) {
           })
           /* Dimmed zones */
           , dimZones.map(z => (
-            React.createElement('rect', { key: "d-"+z.x+z.y, x: z.x, y: z.y, width: z.w, height: z.h, rx: "2",
+            React.createElement('rect', { key: "d-"+z.x+"-"+z.y, x: z.x, y: z.y, width: z.w, height: z.h, rx: "2",
               fill: "rgba(255,255,255,0.03)", stroke: "rgba(255,255,255,0.08)", strokeWidth: "1",})
           ))
+          /* ── FLIP BUTTON on court ── top-right corner */
+          , React.createElement('g', { onClick: onFlip, style: { cursor: "pointer" },}
+            , React.createElement('rect', { x: "278", y: "12", width: "38", height: "18", rx: "3", fill: "#1a3a6e", stroke: "#4a9eff", strokeWidth: "1.5",
+              opacity: "0.9",})
+            , React.createElement('text', { x: "297", y: "24", textAnchor: "middle", fontSize: "9", fill: "#4a9eff", fontWeight: "600",}, "⇅ flip")
+          )
         )
       )
       , value && (
@@ -708,79 +703,99 @@ function CourtZonePicker({ side, value, onChange, serverName, returnerName }) {
   );
 }
 
-// ─── RETURN LANDING PICKER — full court, returner at bottom ─────────────────
-function ReturnLandPicker({ value, onChange, serveSide, serverName, returnerName }) {
-  // When returner is on Deuce side (right of centre):
-  //   Left col = Cross-court, Right col = Down-the-line
-  // When returner is on Ad side (left of centre):
-  //   Left col = Down-the-line, Right col = Cross-court
-  const returnerOnDeuce = serveSide !== "Ad"; // returner mirrors serve side
+// ─── RETURN LANDING PICKER — zones on server's side, flip button on diagram ───
+function ReturnLandPicker({ value, onChange, serveSide, serverName, returnerName, flipped, onFlip }) {
+  // Returner is always on the OPPOSITE side from server
+  // flipped=false: server bottom → return lands in server's half = BOTTOM
+  // flipped=true:  server top    → return lands in server's half = TOP
+  // Returner standing position (for the dot):
+  //   server deuce (right) → returner deuce side (right)
+  //   server ad   (left)  → returner ad side (left)
+  const returnerOnDeuce = (serveSide || "Deuce") !== "Ad";
   const returnerX = returnerOnDeuce ? 215 : 125;
-  const sName = serverName || "Server";
+  const sName = serverName  || "Server";
   const rName = returnerName || "Returner";
 
-  // Column labels depend on returner position
-  const col1 = returnerOnDeuce ? "Cross" : "Down-line";
+  // Column labels flip with returner position
+  const col1 = returnerOnDeuce ? "Cross"     : "Down-line";
   const col3 = returnerOnDeuce ? "Down-line" : "Cross";
 
-  // Zone definitions — opponent's half (top of court)
-  // Same court coords: opponent's baseline y=10→80, service line y=80, net y=133
+  // Zone y positions — always in SERVER's half
+  // flipped=false: server bottom → zones in bottom half (y 147-270)
+  // flipped=true:  server top    → zones in top half (y 12-133)
+  const zy  = flipped ? 12  : 147;
+  const my  = flipped ? 80  : 195;
+  const zh  = flipped ? 66  : 46;
+  const mh  = flipped ? 51  : 46;
+  const netY = 133;
+
+  // Server and returner label/dot positions
+  // Server is where the zones are (their side)
+  const serverLabelY  = flipped ? 18  : 258;
+  const returnerLabelY = flipped ? 258 : 18;
+  const returnerDotY  = flipped ? 243 : 35;
+
   const zones = [
-    { id: col1+"-Deep",    lbl: col1,      sub: "Deep", x: 73,  y: 12, w: 62, h: 66 },
-    { id: "Centre-Deep",   lbl: "Centre",  sub: "Deep", x: 137, y: 12, w: 66, h: 66 },
-    { id: col3+"-Deep",    lbl: col3,      sub: "Deep", x: 205, y: 12, w: 62, h: 66 },
-    { id: col1+"-Mid",     lbl: col1,      sub: "Mid",  x: 73,  y: 80, w: 62, h: 51 },
-    { id: "Centre-Mid",    lbl: "Centre",  sub: "Mid",  x: 137, y: 80, w: 66, h: 51 },
-    { id: col3+"-Mid",     lbl: col3,      sub: "Mid",  x: 205, y: 80, w: 62, h: 51 },
+    { id: col1+"-Deep",  lbl: col1,     sub: "Deep", x: 73,  y: zy, w: 62, h: zh },
+    { id: "Centre-Deep", lbl: "Centre", sub: "Deep", x: 137, y: zy, w: 66, h: zh },
+    { id: col3+"-Deep",  lbl: col3,     sub: "Deep", x: 205, y: zy, w: 62, h: zh },
+    { id: col1+"-Mid",   lbl: col1,     sub: "Mid",  x: 73,  y: my, w: 62, h: mh },
+    { id: "Centre-Mid",  lbl: "Centre", sub: "Mid",  x: 137, y: my, w: 66, h: mh },
+    { id: col3+"-Mid",   lbl: col3,     sub: "Mid",  x: 205, y: my, w: 62, h: mh },
   ];
 
   return (
     React.createElement('div', { style: { marginTop: 5 },}
       , React.createElement('div', { style: { background: "#236b36", borderRadius: 6, padding: 5, border: "2px solid #145228" },}
-        , React.createElement('svg', { width: "100%", viewBox: "0 0 340 280"   , style: { display: "block", maxHeight: 180 },}
+        , React.createElement('svg', { width: "100%", viewBox: "0 0 340 280"   , style: { display: "block", maxHeight: 190 },}
           , React.createElement('rect', { width: "340", height: "280", fill: "#236b36",})
-          /* Outer boundary */
+          /* Court */
           , React.createElement('rect', { x: "30", y: "10", width: "280", height: "260", fill: "none", stroke: "rgba(255,255,255,0.7)", strokeWidth: "1.5",})
-          /* Singles sidelines */
-          , React.createElement('line', { x1: "72", y1: "10", x2: "72", y2: "270", stroke: "rgba(255,255,255,0.65)", strokeWidth: "1.5",})
+          , React.createElement('line', { x1: "72", y1: "10",  x2: "72",  y2: "270", stroke: "rgba(255,255,255,0.65)", strokeWidth: "1.5",})
           , React.createElement('line', { x1: "268", y1: "10", x2: "268", y2: "270", stroke: "rgba(255,255,255,0.65)", strokeWidth: "1.5",})
-          /* Opponent service line */
-          , React.createElement('line', { x1: "72", y1: "80", x2: "268", y2: "80", stroke: "rgba(255,255,255,0.6)", strokeWidth: "1.5",})
-          /* Returner service line (bottom) */
-          , React.createElement('line', { x1: "72", y1: "200", x2: "268", y2: "200", stroke: "rgba(255,255,255,0.35)", strokeWidth: "1",})
+          , React.createElement('line', { x1: "72", y1: "80",  x2: "268", y2: "80",  stroke: "rgba(255,255,255,0.5)",  strokeWidth: "1.2",})
+          , React.createElement('line', { x1: "72", y1: "200", x2: "268", y2: "200", stroke: "rgba(255,255,255,0.5)",  strokeWidth: "1.2",})
           /* Net */
           , React.createElement('rect', { x: "22", y: "129", width: "296", height: "8", fill: "rgba(255,255,255,0.12)", rx: "1",})
           , React.createElement('line', { x1: "22", y1: "133", x2: "318", y2: "133", stroke: "rgba(255,255,255,0.85)", strokeWidth: "3.5",})
           , React.createElement('text', { x: "170", y: "131", textAnchor: "middle", fontSize: "7", fill: "rgba(255,255,255,0.7)", letterSpacing: "3",}, "NET")
           /* Labels */
-          , React.createElement('text', { x: "170", y: "55", textAnchor: "middle", fontSize: "10", fill: "rgba(255,255,255,0.22)", letterSpacing: "1",}, sName)
-          , React.createElement('text', { x: "170", y: "258", textAnchor: "middle", fontSize: "10", fill: "rgba(176,96,232,0.6)", letterSpacing: "1",}, rName)
+          , React.createElement('text', { x: "170", y: serverLabelY,   textAnchor: "middle", fontSize: "10", fill: "rgba(244,211,94,0.55)",  letterSpacing: "1",}, sName)
+          , React.createElement('text', { x: "170", y: returnerLabelY, textAnchor: "middle", fontSize: "10", fill: "rgba(176,96,232,0.65)", letterSpacing: "1",}, rName)
           /* Returner dot */
-          , React.createElement('circle', { cx: returnerX, cy: "243", r: "5", fill: P2C,})
-          /* Into Net zone on the net */
+          , React.createElement('circle', { cx: returnerX, cy: returnerDotY, r: "5", fill: P2C,})
+          /* Into Net zone — on the net, spanning full width */
           , React.createElement('g', { onClick: () => onChange(value === "Net" ? null : "Net"), style: { cursor: "pointer" },}
             , React.createElement('rect', { x: "73", y: "134", width: "194", height: "24", rx: "3",
               fill: value === "Net" ? "rgba(230,57,70,0.5)" : "rgba(230,57,70,0.2)",
               stroke: value === "Net" ? "#e63946" : "rgba(230,57,70,0.5)",
               strokeWidth: value === "Net" ? "2" : "1.5",})
-            , React.createElement('text', { x: "170", y: "150", textAnchor: "middle", fontSize: "9", fill: value === "Net" ? "#fff" : "#ff8080", fontWeight: "500",}, "Into Net" )
+            , React.createElement('text', { x: "170", y: "150", textAnchor: "middle", fontSize: "9",
+              fill: value === "Net" ? "#fff" : "#ff8080", fontWeight: "500",}, "Into Net" )
           )
-          /* Return landing zones */
+          /* Return zones (in server's half) */
           , zones.map(z => {
             const sel = value === z.id;
             return (
               React.createElement('g', { key: z.id, onClick: () => onChange(value === z.id ? null : z.id), style: { cursor: "pointer" },}
                 , React.createElement('rect', { x: z.x, y: z.y, width: z.w, height: z.h, rx: "3",
-                  fill: sel ? "rgba(176,96,232,0.55)" : z.sub === "Deep" ? "rgba(64,192,112,0.15)" : "rgba(64,192,112,0.1)",
-                  stroke: sel ? P2C : z.sub === "Deep" ? "rgba(64,192,112,0.45)" : "rgba(64,192,112,0.3)",
+                  fill: sel ? "rgba(176,96,232,0.55)" : z.sub==="Deep" ? "rgba(64,192,112,0.18)" : "rgba(64,192,112,0.1)",
+                  stroke: sel ? P2C : z.sub==="Deep" ? "rgba(64,192,112,0.5)" : "rgba(64,192,112,0.3)",
                   strokeWidth: sel ? "2" : "1.5",})
-                , React.createElement('text', { x: z.x+z.w/2, y: z.y+z.h/2-5, textAnchor: "middle", fontSize: "8",
-                  fill: sel ? "#fff" : "rgba(255,255,255,0.7)", fontWeight: "500",}, z.lbl)
+                , React.createElement('text', { x: z.x+z.w/2, y: z.y+z.h/2-4, textAnchor: "middle", fontSize: "8",
+                  fill: sel ? "#fff" : "rgba(255,255,255,0.75)", fontWeight: "500",}, z.lbl)
                 , React.createElement('text', { x: z.x+z.w/2, y: z.y+z.h/2+7, textAnchor: "middle", fontSize: "7",
-                  fill: sel ? "rgba(255,255,255,0.85)" : "rgba(255,255,255,0.45)",}, z.sub)
+                  fill: sel ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.45)",}, z.sub)
               )
             );
           })
+          /* Flip button — top-right corner */
+          , onFlip && (
+            React.createElement('g', { onClick: onFlip, style: { cursor: "pointer" },}
+              , React.createElement('rect', { x: "278", y: "12", width: "38", height: "18", rx: "3", fill: "#1a3a6e", stroke: "#4a9eff", strokeWidth: "1.5", opacity: "0.9",})
+              , React.createElement('text', { x: "297", y: "24", textAnchor: "middle", fontSize: "9", fill: "#4a9eff", fontWeight: "600",}, "⇅ flip")
+            )
+          )
         )
       )
       , value && (
@@ -1218,44 +1233,40 @@ function SetupScreen({ onStart, themeId, onThemeChange, T }) {
   );
 }
 
-// ─── SCORE BANNER ─────────────────────────────────────────────────────────────}
-
 // ─── SCORE BANNER ─────────────────────────────────────────────────────────────
 function PlayerRow({ pid, name, setup, score, T }) {
   const pCol = pid === "p1" ? P1C : P2C;
   const pBg  = pid === "p1" ? P1BG : P2BG;
   const utr  = setup[pid === "p1" ? "p1utr" : "p2utr"];
   const hand = setup[pid === "p1" ? "p1hand" : "p2hand"];
-  const { sets, games, points, server, matchWinner, superTieBreak } = score;
-  return (
-    React.createElement('div', { style: { display: "flex", alignItems: "center", padding: "5px 14px", gap: 8 },}
-      , React.createElement('div', { style: { width: 8, height: 8, borderRadius: "50%", background: server === pid ? pCol : "transparent", flexShrink: 0 },} )
-      , React.createElement('div', { style: { display: "flex", flexDirection: "column", width: 170 },}
-        , React.createElement('div', { style: { fontWeight: 700, fontSize: 13, color: pCol, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: T.fontBody },}, name)
-        , React.createElement('div', { style: { display: "flex", gap: 5, marginTop: 2 },}
-          , utr && React.createElement('span', { style: { fontSize: 9, fontWeight: 700, color: pCol, background: pCol + "25", border: "1px solid " + pCol, borderRadius: 4, padding: "1px 5px" },}, "UTR " , utr)
-          , hand && React.createElement('span', { style: { fontSize: 9, color: pCol, border: "1px solid " + pCol + "50", borderRadius: 4, padding: "1px 5px" },}, hand === "Left" ? "L" : "R", "-hand")
-        )
+  const { sets, games, points, server, matchWinner } = score;
+  const setElems = sets.map(function(st, i) {
+    return React.createElement('div', { key: i, style: { background: CARD2, borderRadius: 5, padding: "2px 7px", fontSize: 14, fontWeight: 800, color: ACCENT, minWidth: 24, textAlign: "center" }}, st[pid]);
+  });
+  return React.createElement('div', { style: { display: "flex", alignItems: "center", padding: "5px 14px", gap: 8 }},
+    React.createElement('div', { style: { width: 8, height: 8, borderRadius: "50%", background: server === pid ? pCol : "transparent", flexShrink: 0 }}),
+    React.createElement('div', { style: { display: "flex", flexDirection: "column", width: 170 }},
+      React.createElement('div', { style: { fontWeight: 700, fontSize: 13, color: pCol, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: T.fontBody }}, name),
+      React.createElement('div', { style: { display: "flex", gap: 5, marginTop: 2 }},
+        utr ? React.createElement('span', { style: { fontSize: 9, fontWeight: 700, color: pCol, background: pCol + "25", border: "1px solid " + pCol, borderRadius: 4, padding: "1px 5px" }}, "UTR " + utr) : null,
+        hand ? React.createElement('span', { style: { fontSize: 9, color: pCol, border: "1px solid " + pCol + "50", borderRadius: 4, padding: "1px 5px" }}, hand === "Left" ? "L-hand" : "R-hand") : null
       )
-      , sets.map((st, i) => (
-        React.createElement('div', { key: i, style: { background: CARD2, borderRadius: 5, padding: "2px 7px", fontSize: 14, fontWeight: 800, color: ACCENT, minWidth: 24, textAlign: "center" },}, st[pid])
-      ))
-      , React.createElement('div', { style: { background: COURT_GREEN, borderRadius: 5, padding: "2px 9px", fontSize: 14, fontWeight: 900, color: WHITE, minWidth: 28, textAlign: "center" },}, games[pid])
-      , React.createElement('div', { style: { background: pBg, borderRadius: 7, padding: "3px 12px", fontSize: 18, fontWeight: 900, color: pCol, minWidth: 42, textAlign: "center" },}, points[pid])
-      , matchWinner === pid && React.createElement('span', { style: { color: pCol, fontWeight: 800, fontSize: 12 },}, "WON")
-    )
+    ),
+    ...setElems,
+    React.createElement('div', { style: { background: COURT_GREEN, borderRadius: 5, padding: "2px 9px", fontSize: 14, fontWeight: 900, color: WHITE, minWidth: 28, textAlign: "center" }}, games[pid]),
+    React.createElement('div', { style: { background: pBg, borderRadius: 7, padding: "3px 12px", fontSize: 18, fontWeight: 900, color: pCol, minWidth: 42, textAlign: "center" }}, points[pid]),
+    matchWinner === pid ? React.createElement('span', { style: { color: pCol, fontWeight: 800, fontSize: 12 }}, "WON") : null
   );
 }
 
 function ScoreBanner({ setup, score, matchTime, T = THEMES.original }) {
   const { superTieBreak } = score;
   const [elapsed, setElapsed] = useState(0);
-  useEffect(() => {
+  useEffect(function() {
     if (!matchTime.start || matchTime.end) return;
-    const id = setInterval(() => setElapsed(Date.now() - matchTime.start), 1000);
-    return () => clearInterval(id);
+    var id = setInterval(function() { setElapsed(Date.now() - matchTime.start); }, 1000);
+    return function() { clearInterval(id); };
   }, [matchTime.start, matchTime.end]);
-
   return (
     React.createElement('div', { style: { background: T.scoreBg, borderBottom: "2px solid " + T.headerBorder, flexShrink: 0, fontFamily: T.fontBody },}
       , React.createElement(PlayerRow, { pid: "p1", name: setup.player1, setup: setup, score: score, T: T,} )
@@ -1269,7 +1280,6 @@ function ScoreBanner({ setup, score, matchTime, T = THEMES.original }) {
     )
   );
 }
-
 // ─── SHOT PICKER ─────────────────────────────────────────────────────────────
 function ShotPicker({ value, onChange, accentColor = "#1a5276", label }) {
   return (
@@ -1568,7 +1578,7 @@ function StepHeader({ num, label, color = "#5abaff", fontFamily }) {
   );
 }
 
-function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES.original }) {
+function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES.original, courtFlipped = false, onFlipCourt }) {
   const { player1, player2 } = setup;
   const { server } = score;
   const setT = (k, v) => setTag(p => ({ ...p, [k]: v }));
@@ -1652,7 +1662,7 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES
         )
 
         /* Court zone picker — replaces Wide/Body/T */
-        , React.createElement(CourtZonePicker, { side: autoServeSide, value: tag.serveZone, onChange: v => setT("serveZone", v), serverName: player1, returnerName: player2,} )
+        , React.createElement(CourtZonePicker, { side: autoServeSide, value: tag.serveZone, onChange: v => setT("serveZone", v), serverName: player1, returnerName: player2, flipped: courtFlipped, onFlip: onFlipCourt,} )
 
 
         /* 1st serve fault */
@@ -2130,6 +2140,10 @@ function App() {
   const [themeId, setThemeId] = useState("original");
   const T = THEMES[themeId] || THEMES.original;
   const [showOverwrite, setShowOverwrite] = useState(false);
+  const [courtFlipped, setCourtFlipped] = useState(false);
+  const handleFlipCourt = () => {
+    setCourtFlipped(f => !f);
+  };
 
   const canTriggerSuperTie = (fmt) => ["Best of 3","Best of 3 Short Sets"].includes(fmt);
 
@@ -2393,7 +2407,7 @@ function App() {
         , tab === "tag" && (
           React.createElement(React.Fragment, null
             , React.createElement('div', { style: { width: 410, background: CARD, borderRight: `1px solid #1e3a5f`, display: "flex", flexDirection: "column", overflowY: "auto", flexShrink: 0 },}
-              , React.createElement(TagPanel, { setup: setup, score: score, tag: tag, setTag: setTag, onLog: handleLog, onUndo: handleUndo, points: points, T: T,} )
+              , React.createElement(TagPanel, { setup: setup, score: score, tag: tag, setTag: setTag, onLog: handleLog, onUndo: handleUndo, points: points, T: T, courtFlipped: courtFlipped, onFlipCourt: handleFlipCourt,} )
             )
             , React.createElement('div', { style: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },}
               , React.createElement('div', { style: { padding: "7px 10px", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 },}
@@ -2486,12 +2500,8 @@ root.render(React.createElement(App));
 
   </script>
   <script>
-    window.addEventListener('load', function() {
-      setTimeout(function() { var l = document.getElementById('loading'); if(l) l.style.display='none'; }, 600);
-    });
-    if (screen.orientation && screen.orientation.lock) {
-      screen.orientation.lock('landscape').catch(function(){});
-    }
+    window.addEventListener('load',function(){setTimeout(function(){var l=document.getElementById('loading');if(l)l.style.display='none';},600);});
+    if(screen.orientation&&screen.orientation.lock){screen.orientation.lock('landscape').catch(function(){});}
   </script>
 </body>
 </html>
