@@ -711,14 +711,19 @@ function ReturnLandPicker({ value, onChange, serveSide, serverName, returnerName
   // Returner standing position (for the dot):
   //   server deuce (right) → returner deuce side (right)
   //   server ad   (left)  → returner ad side (left)
-  const returnerOnDeuce = (serveSide || "Deuce") !== "Ad";
-  const returnerX = returnerOnDeuce ? 215 : 125;
+  // Returner stands on the same side as the active service box
+  // Deuce serve → Ad box (LEFT) → returner on LEFT side (x=125)
+  // Ad serve    → Deuce box (RIGHT) → returner on RIGHT side (x=215)
+  const isDeuceSide = (serveSide || "Deuce") === "Deuce";
+  const returnerX = isDeuceSide ? 125 : 215;
   const sName = serverName  || "Server";
   const rName = returnerName || "Returner";
 
-  // Column labels flip with returner position
-  const col1 = returnerOnDeuce ? "Cross"     : "Down-line";
-  const col3 = returnerOnDeuce ? "Down-line" : "Cross";
+  // Column labels: from returner's POV standing on their side
+  // Deuce returner (left side): their down-the-line goes RIGHT (col3), cross goes LEFT (col1)
+  // Ad returner (right side):   their down-the-line goes LEFT (col1), cross goes RIGHT (col3)
+  const col1 = isDeuceSide ? "Cross"     : "Down-line";
+  const col3 = isDeuceSide ? "Down-line" : "Cross";
 
   // Zone y positions — always in SERVER's half
   // flipped=false: server bottom → zones in bottom half (y 147-270)
@@ -731,9 +736,11 @@ function ReturnLandPicker({ value, onChange, serveSide, serverName, returnerName
 
   // Server and returner label/dot positions
   // Server is where the zones are (their side)
-  const serverLabelY  = flipped ? 18  : 258;
-  const returnerLabelY = flipped ? 258 : 18;
-  const returnerDotY  = flipped ? 243 : 35;
+  // Server label is on the OPPOSITE side from zones (server's far end)
+  // Returner is on the SAME side as zones (server's near end), behind the baseline
+  const serverLabelY   = flipped ? 258 : 18;   // server is on far side from zones
+  const returnerLabelY = flipped ? 18  : 258;  // returner is near the zones
+  const returnerDotY   = flipped ? 35  : 243;  // returner dot near baseline same side as zones
 
   const zones = [
     { id: col1+"-Deep",  lbl: col1,     sub: "Deep", x: 73,  y: zy, w: 62, h: zh },
@@ -1702,7 +1709,15 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES
             )
           )
           , React.createElement('div', { style: s.sectionLabel,}, "Landing Zone" )
-          , React.createElement(ReturnLandPicker, { value: tag.returnLandZone, onChange: v => setT("returnLandZone", v), serveSide: autoServeSide, serverName: player1, returnerName: player2,} )
+          , React.createElement(ReturnLandPicker, {
+            value: tag.returnLandZone,
+            onChange: v => setT("returnLandZone", v),
+            serveSide: autoServeSide,
+            serverName: player1,
+            returnerName: player2,
+            flipped: courtFlipped,
+            onFlip: onFlipCourt,}
+          )
         )
       )
 
