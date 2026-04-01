@@ -7,15 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="TennisTag Pro" />
   <title>TennisTag Pro</title>
-  <style>
-    html,body{margin:0;padding:0;height:100%;overscroll-behavior:none;-webkit-overflow-scrolling:touch;background:#0d1b2a}
-    #root{height:100%;min-height:100vh}
-    *{-webkit-tap-highlight-color:transparent}
-    #loading{position:fixed;inset:0;background:#0d1b2a;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif;z-index:99999}
-    #loading .ball{font-size:56px;animation:spin 1.2s linear infinite}
-    @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
-    #loading p{margin-top:16px;font-size:14px;color:#7fa8c0;letter-spacing:2px;text-transform:uppercase}
-  </style>
+  <style>html,body{margin:0;padding:0;height:100%;overscroll-behavior:none;-webkit-overflow-scrolling:touch;background:#0d1b2a}#root{height:100%;min-height:100vh}*{-webkit-tap-highlight-color:transparent}#loading{position:fixed;inset:0;background:#0d1b2a;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif;z-index:99999}#loading .ball{font-size:56px;animation:spin 1.2s linear infinite}@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}#loading p{margin-top:16px;font-size:14px;color:#7fa8c0;letter-spacing:2px;text-transform:uppercase}</style>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 </head>
@@ -513,6 +505,7 @@ function exportCSV(points, setup) {
       p.serveSpin || "",
       p.serveZone || "",
       (p.serveFault && p.serveFault !== "?") ? p.serveFault : "",
+      p.dfFaultType || "",
       p.returnHand || "",
       p.returnLandZone || "",
       p.servePlusOne || "",
@@ -597,6 +590,8 @@ function CourtZonePicker({ side, value, onChange, serverName, returnerName, flip
   const sName = serverName  || "Server";
   const rName = returnerName || "Returner";
   const boxLabel = isDeuce ? "Ad box" : "Deuce box";
+  // Deuce = server always RIGHT of centre (x=215), Ad = LEFT (x=125)
+  // Flip changes which END they stand at (top/bottom), NOT which side (left/right)
   const serverX   = isDeuce ? 215 : 125;
 
   // Zone coords — always in the OPPONENT half (far side from server)
@@ -625,6 +620,9 @@ function CourtZonePicker({ side, value, onChange, serverName, returnerName, flip
     { id:"Body-Short", lbl:"Body", sub:"Short", x:202, y:my, w:31, h:mh },
     { id:"Wide-Short", lbl:"Wide", sub:"Short", x:235, y:my, w:32, h:mh },
   ];
+  // Deuce serve always lands in Ad box (LEFT half of opponent's court)
+  // Ad serve always lands in Deuce box (RIGHT half)
+  // Flip only changes top/bottom — left/right stays the same
   const activeZones = isDeuce ? zonesLeft : zonesRight;
   const dimZones    = isDeuce ? zonesRight : zonesLeft;
 
@@ -632,11 +630,21 @@ function CourtZonePicker({ side, value, onChange, serverName, returnerName, flip
   const netY   = 133;
   const netTop = flipped ? 192 : 129;   // net bar top
   const activeLabelY = flipped ? (my + mh + 10) : (zy - 5);
+  const activeLabelX = isDeuce ? 121 : 219;
 
   return (
     React.createElement('div', { style: { marginTop: 6 },}
-      , React.createElement('div', { style: { fontSize: 9, color: MUTED, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 5 },}, "Landing Zone — "
-           , React.createElement('span', { style: { color: isDeuce ? "#7eb3ff" : ACCENT },}, side || "Deuce", " serve "  , "→", " " , boxLabel)
+      , React.createElement('div', { style: { fontSize: 9, color: MUTED, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 4 },}, "Landing Zone"
+
+      )
+      , React.createElement('div', { style: { display: "flex", gap: 8, marginBottom: 5, fontSize: 10 },}
+        , React.createElement('span', { style: { background: (isDeuce ? "#1a3a6e" : "#3a2a00"), border: "1.5px solid " + (isDeuce ? "#7eb3ff" : ACCENT), borderRadius: 5, padding: "2px 8px", color: isDeuce ? "#7eb3ff" : ACCENT, fontWeight: 700 },}
+          , isDeuce ? "Deuce" : "Ad", " serve"
+        )
+        , React.createElement('span', { style: { color: MUTED, fontSize: 10, paddingTop: 3 },}, "→ lands in")
+        , React.createElement('span', { style: { background: "#1a3a2a", border: "1.5px solid #40916c", borderRadius: 5, padding: "2px 8px", color: "#52c41a", fontWeight: 700 },}
+          , boxLabel
+        )
       )
       , React.createElement('div', { style: { background: "#236b36", borderRadius: 6, padding: 5, border: "2px solid #145228" },}
         , React.createElement('svg', { width: "100%", viewBox: "0 0 340 280"   , style: { display: "block", maxHeight: 200 },}
@@ -657,11 +665,13 @@ function CourtZonePicker({ side, value, onChange, serverName, returnerName, flip
           , React.createElement('text', { x: "170", y: "131", textAnchor: "middle", fontSize: "7", fill: "rgba(255,255,255,0.7)", letterSpacing: "3",}, "NET")
           /* Player labels */
           , React.createElement('text', { x: "170", y: serverLY, textAnchor: "middle", fontSize: "10", fill: "rgba(244,211,94,0.65)", letterSpacing: "1",}, sName)
-          , React.createElement('text', { x: "170", y: retLY,    textAnchor: "middle", fontSize: "10", fill: "rgba(255,255,255,0.2)",  letterSpacing: "1",}, rName)
+          /* Returner dot — near end (same as server), OPPOSITE side */
+          , React.createElement('circle', { cx: isDeuce ? 125 : 215, cy: serverY, r: "5", fill: P2C,})
+          , React.createElement('text', { x: isDeuce ? 125 : 215, y: serverLY, textAnchor: "middle", fontSize: "9", fill: "rgba(176,96,232,0.7)", letterSpacing: "1",}, rName)
           /* Server dot */
           , React.createElement('circle', { cx: serverX, cy: serverY, r: "5", fill: ACCENT,})
           /* Active box label */
-          , React.createElement('text', { x: isDeuce ? 121 : 219, y: activeLabelY, textAnchor: "middle", fontSize: "8",
+          , React.createElement('text', { x: activeLabelX, y: activeLabelY, textAnchor: "middle", fontSize: "8",
             fill: isDeuce ? "#7eb3ff" : ACCENT, fontWeight: "500", letterSpacing: "0.5",}
             , boxLabel.toUpperCase()
           )
@@ -705,46 +715,55 @@ function CourtZonePicker({ side, value, onChange, serverName, returnerName, flip
 
 // ─── RETURN LANDING PICKER — zones on server's side, flip button on diagram ───
 function ReturnLandPicker({ value, onChange, serveSide, serverName, returnerName, flipped, onFlip }) {
-  // Returner is always on the OPPOSITE side from server
-  // flipped=false: server bottom → return lands in server's half = BOTTOM
-  // flipped=true:  server top    → return lands in server's half = TOP
-  // Returner standing position (for the dot):
-  //   server deuce (right) → returner deuce side (right)
-  //   server ad   (left)  → returner ad side (left)
-  // Returner stands on the same side as the active service box
-  // Deuce serve → Ad box (LEFT) → returner on LEFT side (x=125)
-  // Ad serve    → Deuce box (RIGHT) → returner on RIGHT side (x=215)
+  // CONFIRMED from photo:
+  // Max (returner, purple) = FAR end, opposite side from John
+  // John (server, yellow)  = NEAR end, same side as serve court
+  // Return zones = NEAR end BOTTOM half (between net and John's baseline)
+  // Into Net = on the net
+  //
+  // Deuce: John near-RIGHT(x=215), Max far-LEFT(x=125)
+  // Ad:    John near-LEFT(x=125),  Max far-RIGHT(x=215)
   const isDeuceSide = (serveSide || "Deuce") === "Deuce";
-  const returnerX = isDeuceSide ? 125 : 215;
-  const sName = serverName  || "Server";
-  const rName = returnerName || "Returner";
 
-  // Column labels: from returner's POV standing on their side
-  // Deuce serve → Ad box (LEFT side) → returner stands LEFT (x=125)
-  //   Down-the-line from LEFT = goes LEFT → col1 (left column) = Down-line
-  //   Cross-court from LEFT   = goes RIGHT → col3 (right column) = Cross
-  // Ad serve → Deuce box (RIGHT side) → returner stands RIGHT (x=215)
-  //   Down-the-line from RIGHT = goes RIGHT → col3 = Down-line
-  //   Cross-court from RIGHT   = goes LEFT  → col1 = Cross
+  // When NOT flipped: John bottom-RIGHT(Deuce), Max top-LEFT(Deuce)
+  // When FLIPPED:     John top-LEFT(Deuce — mirrored), Max bottom-RIGHT(Deuce)
+  // Server: Deuce=RIGHT(215), Ad=LEFT(125) — never changes with flip
+  // Returner: always OPPOSITE side — Deuce=LEFT(125), Ad=RIGHT(215)
+  // Server at NEAR end: not flipped=bottom(243), flipped=top(28)
+  // Returner at FAR end: always OPPOSITE end from server
+  const serverX      = isDeuceSide ? 215 : 125;
+  const returnerX    = isDeuceSide ? 125 : 215;
+  const serverDotY   = flipped ? 28  : 243;
+  const returnerDotY = flipped ? 243 : 28;
+
+  const sName = serverName   || "Server";
+  const rName = returnerName || "Returner";
+  const serverLabelY   = flipped ? 16  : 260;
+  const returnerLabelY = flipped ? 260 : 16;
+
+  // Return zones BOTTOM half (near end — John's half, where return lands)
+  // flipped=false: zones in bottom half
+  // flipped=true:  zones in top half (court orientation flipped)
+  // Net is at y=133
+  // NOT flipped: John at BOTTOM → return lands in server's half = BOTTOM
+  //   mid row (just below net): y=136-176
+  //   deep row (near baseline): y=178-235
+  // FLIPPED: John at TOP → return lands in server's half = TOP
+  //   mid row (just above net): y=92-130
+  //   deep row (near top baseline): y=12-90
+  const my = flipped ? 92  : 136;
+  const mh = flipped ? 38  : 40;
+  const zy = flipped ? 12  : 178;
+  const zh = flipped ? 78  : 55;
+
+  // Into Net zone — always on the net (y=129-152 area)
+  // When flipped, net is still at same position
+
+  // Max always at opposite side from server
+  // Deuce: Max on LEFT → down-line=LEFT(col1), cross=RIGHT(col3)
+  // Ad:    Max on RIGHT → down-line=RIGHT(col3), cross=LEFT(col1)
   const col1 = isDeuceSide ? "Down-line" : "Cross";
   const col3 = isDeuceSide ? "Cross"     : "Down-line";
-
-  // Zone y positions — always in SERVER's half
-  // flipped=false: server bottom → zones in bottom half (y 147-270)
-  // flipped=true:  server top    → zones in top half (y 12-133)
-  const zy  = flipped ? 12  : 147;
-  const my  = flipped ? 80  : 195;
-  const zh  = flipped ? 66  : 46;
-  const mh  = flipped ? 51  : 46;
-  const netY = 133;
-
-  // Server and returner label/dot positions
-  // Server is where the zones are (their side)
-  // Server label is on the OPPOSITE side from zones (server's far end)
-  // Returner is on the SAME side as zones (server's near end), behind the baseline
-  const serverLabelY   = flipped ? 258 : 18;   // server is on far side from zones
-  const returnerLabelY = flipped ? 18  : 258;  // returner is near the zones
-  const returnerDotY   = flipped ? 35  : 243;  // returner dot near baseline same side as zones
 
   const zones = [
     { id: col1+"-Deep",  lbl: col1,     sub: "Deep", x: 73,  y: zy, w: 62, h: zh },
@@ -770,10 +789,11 @@ function ReturnLandPicker({ value, onChange, serveSide, serverName, returnerName
           , React.createElement('rect', { x: "22", y: "129", width: "296", height: "8", fill: "rgba(255,255,255,0.12)", rx: "1",})
           , React.createElement('line', { x1: "22", y1: "133", x2: "318", y2: "133", stroke: "rgba(255,255,255,0.85)", strokeWidth: "3.5",})
           , React.createElement('text', { x: "170", y: "131", textAnchor: "middle", fontSize: "7", fill: "rgba(255,255,255,0.7)", letterSpacing: "3",}, "NET")
-          /* Labels */
-          , React.createElement('text', { x: "170", y: serverLabelY,   textAnchor: "middle", fontSize: "10", fill: "rgba(244,211,94,0.55)",  letterSpacing: "1",}, sName)
-          , React.createElement('text', { x: "170", y: returnerLabelY, textAnchor: "middle", fontSize: "10", fill: "rgba(176,96,232,0.65)", letterSpacing: "1",}, rName)
-          /* Returner dot */
+          /* John (server) — near end */
+          , React.createElement('text', { x: serverX,   y: serverLabelY,   textAnchor: "middle", fontSize: "10", fill: "rgba(244,211,94,0.65)",  letterSpacing: "1",}, sName)
+          , React.createElement('circle', { cx: serverX,   cy: serverDotY,   r: "5", fill: ACCENT,})
+          /* Max (returner) — far end, opposite side */
+          , React.createElement('text', { x: returnerX, y: returnerLabelY, textAnchor: "middle", fontSize: "10", fill: "rgba(176,96,232,0.75)", letterSpacing: "1",}, rName)
           , React.createElement('circle', { cx: returnerX, cy: returnerDotY, r: "5", fill: P2C,})
           /* Into Net zone — on the net, spanning full width */
           , React.createElement('g', { onClick: () => onChange(value === "Net" ? null : "Net"), style: { cursor: "pointer" },}
@@ -1570,6 +1590,7 @@ function ScoreOverwriteModal({ setup, score, onApply, onClose, T = THEMES.origin
 // ─── TAG PANEL ────────────────────────────────────────────────────────────────
 const EMPTY_TAG = {
   serveType: null, serveSpin: null, serveSide: null, serveZone: null, serveFault: null,
+  dfFaultType: null,
   returnHand: null, returnLandZone: null,
   servePlusOne: null, sp1Dir: null,
   returnPlusOne: null, rp1Dir: null,
@@ -1812,6 +1833,24 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES
                   , isAce || isReturnError ? (server === "p1" ? player1 : player2)
                     : (server === "p1" ? player2 : player1)
                 )
+              )
+            )
+          )
+
+          /* Double Fault type */
+          , isDoubleFault && (
+            React.createElement('div', { style: { marginTop: 8 },}
+              , React.createElement('div', { style: { fontSize: 9, color: DANGER, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase", marginBottom: 5 },}, "Double Fault Type"  )
+              , React.createElement('div', { style: s.chipRow,}
+                , SERVE_FAULT_TYPES.map(ft => (
+                  React.createElement('button', { key: ft, onClick: () => setT("dfFaultType", tag.dfFaultType === ft ? null : ft),
+                    style: { padding: "7px 12px", borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer",
+                      border: "2px solid " + (tag.dfFaultType === ft ? DANGER : "#3a1a1a"),
+                      background: tag.dfFaultType === ft ? DANGER : "transparent",
+                      color: tag.dfFaultType === ft ? WHITE : "#c06060" },}
+                    , ft
+                  )
+                ))
               )
             )
           )
@@ -2515,9 +2554,6 @@ const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(React.createElement(App));
 
   </script>
-  <script>
-    window.addEventListener('load',function(){setTimeout(function(){var l=document.getElementById('loading');if(l)l.style.display='none';},600);});
-    if(screen.orientation&&screen.orientation.lock){screen.orientation.lock('landscape').catch(function(){});}
-  </script>
+  <script>window.addEventListener('load',function(){setTimeout(function(){var l=document.getElementById('loading');if(l)l.style.display='none';},600);});if(screen.orientation&&screen.orientation.lock){screen.orientation.lock('landscape').catch(function(){});}</script>
 </body>
 </html>
