@@ -639,7 +639,7 @@ function CourtZonePicker({ side, value, onChange, serverName, returnerName, flip
            , React.createElement('span', { style: { color: isDeuce ? "#7eb3ff" : ACCENT },}, side || "Deuce", " serve "  , "→", " " , boxLabel)
       )
       , React.createElement('div', { style: { background: "#236b36", borderRadius: 6, padding: 5, border: "2px solid #145228" },}
-        , React.createElement('svg', { width: "100%", viewBox: "0 0 340 280"   , style: { display: "block", maxHeight: 190 },}
+        , React.createElement('svg', { width: "100%", viewBox: "0 0 340 280"   , style: { display: "block", maxHeight: 200 },}
           , React.createElement('rect', { width: "340", height: "280", fill: "#236b36",})
           /* Court outer boundary */
           , React.createElement('rect', { x: "30", y: "10", width: "280", height: "260", fill: "none", stroke: "rgba(255,255,255,0.7)", strokeWidth: "1.5",})
@@ -720,10 +720,14 @@ function ReturnLandPicker({ value, onChange, serveSide, serverName, returnerName
   const rName = returnerName || "Returner";
 
   // Column labels: from returner's POV standing on their side
-  // Deuce returner (left side): their down-the-line goes RIGHT (col3), cross goes LEFT (col1)
-  // Ad returner (right side):   their down-the-line goes LEFT (col1), cross goes RIGHT (col3)
-  const col1 = isDeuceSide ? "Cross"     : "Down-line";
-  const col3 = isDeuceSide ? "Down-line" : "Cross";
+  // Deuce serve → Ad box (LEFT side) → returner stands LEFT (x=125)
+  //   Down-the-line from LEFT = goes LEFT → col1 (left column) = Down-line
+  //   Cross-court from LEFT   = goes RIGHT → col3 (right column) = Cross
+  // Ad serve → Deuce box (RIGHT side) → returner stands RIGHT (x=215)
+  //   Down-the-line from RIGHT = goes RIGHT → col3 = Down-line
+  //   Cross-court from RIGHT   = goes LEFT  → col1 = Cross
+  const col1 = isDeuceSide ? "Down-line" : "Cross";
+  const col3 = isDeuceSide ? "Cross"     : "Down-line";
 
   // Zone y positions — always in SERVER's half
   // flipped=false: server bottom → zones in bottom half (y 147-270)
@@ -754,7 +758,7 @@ function ReturnLandPicker({ value, onChange, serveSide, serverName, returnerName
   return (
     React.createElement('div', { style: { marginTop: 5 },}
       , React.createElement('div', { style: { background: "#236b36", borderRadius: 6, padding: 5, border: "2px solid #145228" },}
-        , React.createElement('svg', { width: "100%", viewBox: "0 0 340 280"   , style: { display: "block", maxHeight: 190 },}
+        , React.createElement('svg', { width: "100%", viewBox: "0 0 340 280"   , style: { display: "block", maxHeight: 200 },}
           , React.createElement('rect', { width: "340", height: "280", fill: "#236b36",})
           /* Court */
           , React.createElement('rect', { x: "30", y: "10", width: "280", height: "260", fill: "none", stroke: "rgba(255,255,255,0.7)", strokeWidth: "1.5",})
@@ -1265,7 +1269,6 @@ function PlayerRow({ pid, name, setup, score, T }) {
     matchWinner === pid ? React.createElement('span', { style: { color: pCol, fontWeight: 800, fontSize: 12 }}, "WON") : null
   );
 }
-
 function ScoreBanner({ setup, score, matchTime, T = THEMES.original }) {
   const { superTieBreak } = score;
   const [elapsed, setElapsed] = useState(0);
@@ -1279,9 +1282,7 @@ function ScoreBanner({ setup, score, matchTime, T = THEMES.original }) {
       , React.createElement(PlayerRow, { pid: "p1", name: setup.player1, setup: setup, score: score, T: T,} )
       , React.createElement(PlayerRow, { pid: "p2", name: setup.player2, setup: setup, score: score, T: T,} )
       , React.createElement('div', { style: { padding: "2px 14px 4px", display: "flex", gap: 12, alignItems: "center" },}
-        , React.createElement('span', { style: { fontSize: 11, color: MUTED },}
-          , matchTime.start ? fmtDuration(matchTime.end ? matchTime.end - matchTime.start : elapsed) : "Not started"
-        )
+        , React.createElement('span', { style: { fontSize: 11, color: MUTED },}, matchTime.start ? fmtDuration(matchTime.end ? matchTime.end - matchTime.start : elapsed) : "Not started")
         , superTieBreak && React.createElement('span', { style: { fontSize: 10, color: ACCENT, fontWeight: 700 },}, "Super Tie-Break" )
       )
     )
@@ -1918,7 +1919,7 @@ function PointLog({ points, setup }) {
       , React.createElement('div', { style: { fontSize: 11, color: MUTED, marginBottom: 5, fontWeight: 700 },}, points.length, " points logged"  )
       , !points.length && React.createElement('div', { style: { textAlign: "center", color: MUTED, marginTop: 40, fontSize: 13 },}, "No points logged yet."   )
       , [...points].reverse().map((p, i) => (
-        React.createElement('div', { key: p.id, style: { display: "grid", gridTemplateColumns: "22px 72px 46px 38px 44px 46px 72px 72px 20px 20px", gap: 3, alignItems: "center", padding: "5px 5px", borderRadius: 5, marginBottom: 2, background: i % 2 === 0 ? CARD2 : "transparent", fontSize: 11, color: MUTED },}
+        React.createElement('div', { key: p.id, style: { display: "grid", gridTemplateColumns: "20px 60px 40px 34px 40px 40px 60px 60px 18px 18px", gap: 3, alignItems: "center", padding: "5px 5px", borderRadius: 5, marginBottom: 2, background: i % 2 === 0 ? CARD2 : "transparent", fontSize: 11, color: MUTED },}
           , React.createElement('span', { style: { color: ACCENT, fontWeight: 700 },}, points.length - i)
           , React.createElement('span', { style: { color: WHITE, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },}, getName(p.server))
           , React.createElement('span', null, _optionalChain([p, 'access', _5 => _5.serveType, 'optionalAccess', _6 => _6.replace, 'call', _7 => _7(" Serve","")]))
@@ -2421,14 +2422,14 @@ function App() {
 
         , tab === "tag" && (
           React.createElement(React.Fragment, null
-            , React.createElement('div', { style: { width: 410, background: CARD, borderRight: `1px solid #1e3a5f`, display: "flex", flexDirection: "column", overflowY: "auto", flexShrink: 0 },}
+            , React.createElement('div', { style: { width: 520, background: CARD, borderRight: `1px solid #1e3a5f`, display: "flex", flexDirection: "column", overflowY: "auto", flexShrink: 0 },}
               , React.createElement(TagPanel, { setup: setup, score: score, tag: tag, setTag: setTag, onLog: handleLog, onUndo: handleUndo, points: points, T: T, courtFlipped: courtFlipped, onFlipCourt: handleFlipCourt,} )
             )
             , React.createElement('div', { style: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },}
               , React.createElement('div', { style: { padding: "7px 10px", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 },}
                 , React.createElement('span', { style: { ...s.sectionLabel, marginBottom: 0 },}, "Recent Points" )
               )
-              , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "22px 72px 46px 38px 44px 46px 72px 72px 20px 20px", gap: 3, padding: "4px 5px 4px 15px", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 },}
+              , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "20px 60px 40px 34px 40px 40px 60px 60px 18px 18px", gap: 3, padding: "4px 5px 4px 15px", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 },}
                 , ["#","Server","Type","Dir","Ret/Flt","Rally","Outcome","Winner","🔝","🔴"].map(h => (
                   React.createElement('span', { key: h, style: { fontSize: 9, color: MUTED, fontWeight: 700 },}, h)
                 ))
