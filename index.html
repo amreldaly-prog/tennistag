@@ -665,9 +665,7 @@ function CourtZonePicker({ side, value, onChange, serverName, returnerName, flip
           , React.createElement('text', { x: "170", y: "131", textAnchor: "middle", fontSize: "7", fill: "rgba(255,255,255,0.7)", letterSpacing: "3",}, "NET")
           /* Player labels */
           , React.createElement('text', { x: "170", y: serverLY, textAnchor: "middle", fontSize: "10", fill: "rgba(244,211,94,0.65)", letterSpacing: "1",}, sName)
-          /* Returner dot — near end (same as server), OPPOSITE side */
-          , React.createElement('circle', { cx: isDeuce ? 125 : 215, cy: serverY, r: "5", fill: P2C,})
-          , React.createElement('text', { x: isDeuce ? 125 : 215, y: serverLY, textAnchor: "middle", fontSize: "9", fill: "rgba(176,96,232,0.7)", letterSpacing: "1",}, rName)
+          , React.createElement('text', { x: "170", y: retLY,    textAnchor: "middle", fontSize: "10", fill: "rgba(255,255,255,0.2)",  letterSpacing: "1",}, rName)
           /* Server dot */
           , React.createElement('circle', { cx: serverX, cy: serverY, r: "5", fill: ACCENT,})
           /* Active box label */
@@ -727,19 +725,15 @@ function ReturnLandPicker({ value, onChange, serveSide, serverName, returnerName
 
   // When NOT flipped: John bottom-RIGHT(Deuce), Max top-LEFT(Deuce)
   // When FLIPPED:     John top-LEFT(Deuce — mirrored), Max bottom-RIGHT(Deuce)
-  // Server: Deuce=RIGHT(215), Ad=LEFT(125) — never changes with flip
-  // Returner: always OPPOSITE side — Deuce=LEFT(125), Ad=RIGHT(215)
-  // Server at NEAR end: not flipped=bottom(243), flipped=top(28)
-  // Returner at FAR end: always OPPOSITE end from server
-  const serverX      = isDeuceSide ? 215 : 125;
-  const returnerX    = isDeuceSide ? 125 : 215;
-  const serverDotY   = flipped ? 28  : 243;
-  const returnerDotY = flipped ? 243 : 28;
+  const serverX     = (isDeuceSide !== flipped) ? 215 : 125;
+  const returnerX   = (isDeuceSide !== flipped) ? 125 : 215;
+  const serverDotY  = flipped ? 28  : 243;   // server near baseline — top when flipped
+  const returnerDotY = 28;   // far end baseline (top)
 
   const sName = serverName   || "Server";
   const rName = returnerName || "Returner";
-  const serverLabelY   = flipped ? 16  : 260;
-  const returnerLabelY = flipped ? 260 : 16;
+  const serverLabelY   = 260;  // near end
+  const returnerLabelY = 16;   // far end
 
   // Return zones BOTTOM half (near end — John's half, where return lands)
   // flipped=false: zones in bottom half
@@ -1274,7 +1268,7 @@ function PlayerRow({ pid, name, setup, score, T }) {
   const setElems = sets.map(function(st, i) {
     return React.createElement('div', { key: i, style: { background: CARD2, borderRadius: 5, padding: "2px 7px", fontSize: 14, fontWeight: 800, color: ACCENT, minWidth: 24, textAlign: "center" }}, st[pid]);
   });
-  return React.createElement('div', { style: { display: "flex", alignItems: "center", padding: "5px 14px", gap: 8 }},
+  var rowChildren = [
     React.createElement('div', { style: { width: 8, height: 8, borderRadius: "50%", background: server === pid ? pCol : "transparent", flexShrink: 0 }}),
     React.createElement('div', { style: { display: "flex", flexDirection: "column", width: 170 }},
       React.createElement('div', { style: { fontWeight: 700, fontSize: 13, color: pCol, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: T.fontBody }}, name),
@@ -1282,12 +1276,13 @@ function PlayerRow({ pid, name, setup, score, T }) {
         utr ? React.createElement('span', { style: { fontSize: 9, fontWeight: 700, color: pCol, background: pCol + "25", border: "1px solid " + pCol, borderRadius: 4, padding: "1px 5px" }}, "UTR " + utr) : null,
         hand ? React.createElement('span', { style: { fontSize: 9, color: pCol, border: "1px solid " + pCol + "50", borderRadius: 4, padding: "1px 5px" }}, hand === "Left" ? "L-hand" : "R-hand") : null
       )
-    ),
-    ...setElems,
+    )
+  ].concat(setElems).concat([
     React.createElement('div', { style: { background: COURT_GREEN, borderRadius: 5, padding: "2px 9px", fontSize: 14, fontWeight: 900, color: WHITE, minWidth: 28, textAlign: "center" }}, games[pid]),
     React.createElement('div', { style: { background: pBg, borderRadius: 7, padding: "3px 12px", fontSize: 18, fontWeight: 900, color: pCol, minWidth: 42, textAlign: "center" }}, points[pid]),
     matchWinner === pid ? React.createElement('span', { style: { color: pCol, fontWeight: 800, fontSize: 12 }}, "WON") : null
-  );
+  ]);
+  return React.createElement.apply(React, ['div', { style: { display: "flex", alignItems: "center", padding: "5px 14px", gap: 8 }}].concat(rowChildren));
 }
 function ScoreBanner({ setup, score, matchTime, T = THEMES.original }) {
   const { superTieBreak } = score;
@@ -2195,7 +2190,7 @@ function App() {
   const [themeId, setThemeId] = useState("original");
   const T = THEMES[themeId] || THEMES.original;
   const [showOverwrite, setShowOverwrite] = useState(false);
-  const [courtFlipped, setCourtFlipped] = useState(false);
+  const courtFlipped = false; const setCourtFlipped = () => {};
   const handleFlipCourt = () => {
     setCourtFlipped(f => !f);
   };
