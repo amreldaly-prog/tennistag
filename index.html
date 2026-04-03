@@ -7,9 +7,23 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="TennisTag Pro" />
   <title>TennisTag Pro</title>
-  <style>html,body{margin:0;padding:0;height:100%;overscroll-behavior:none;-webkit-overflow-scrolling:touch;background:#0d1b2a}#root{height:100%;min-height:100vh}*{-webkit-tap-highlight-color:transparent}#loading{position:fixed;inset:0;background:#0d1b2a;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif;z-index:99999}#loading .ball{font-size:56px;animation:spin 1.2s linear infinite}@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}#loading p{margin-top:16px;font-size:14px;color:#7fa8c0;letter-spacing:2px;text-transform:uppercase}@keyframes logflash{0%{opacity:1}100%{opacity:0}}</style>
-  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <style>html,body{margin:0;padding:0;height:100%;overscroll-behavior:none;-webkit-overflow-scrolling:touch;background:#0d1b2a}#root{height:100%;min-height:100vh}*{-webkit-tap-highlight-color:transparent}#loading{position:fixed;inset:0;background:#0d1b2a;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif;z-index:99999}#loading .ball{font-size:56px;animation:spin 1.2s linear infinite}@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}#loading p{margin-top:16px;font-size:14px;color:#7fa8c0;letter-spacing:2px;text-transform:uppercase}@keyframes logflash{0%{opacity:1}100%{opacity:0}}@keyframes pulse{0%{opacity:0.7}100%{opacity:1}}</style>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"
+    onerror="document.getElementById('loading').innerHTML='<div style=&quot;color:#e63946;font-size:16px;font-weight:700;margin-bottom:12px&quot;>⚠️ Offline — Cannot Load</div><div style=&quot;color:#7fa8c0;font-size:13px;max-width:400px;text-align:center;line-height:1.6&quot;>TennisTag Pro needs an internet connection on first load to download React.<br><br>Once loaded, your match data is saved locally and will persist.<br><br>Please connect to Wi-Fi and reload.</div>';"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script>
+    // Register service worker for offline caching if available
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function() {
+        // Cache the page itself for future offline use
+        if ('caches' in window) {
+          caches.open('tennistag-v1').then(function(cache) {
+            cache.add(window.location.href).catch(function(){});
+          }).catch(function(){});
+        }
+      });
+    }
+  </script>
 </head>
 <body>
   <div id="loading"><div class="ball">&#127934;</div><p>Loading TennisTag Pro...</p></div>
@@ -169,6 +183,200 @@ const THEMES = {
 
 const THEME_LIST = Object.values(THEMES);
 
+// ─── CLOUD STORAGE MODULE ────────────────────────────────────────────────────
+// Firebase Firestore integration for match persistence and sync.
+// To enable: set CLOUD_ENABLED = true and configure your Firebase project below.
+const CLOUD_ENABLED = false; // Set to true when Firebase is configured
+const FIREBASE_CONFIG = {
+  // Replace with your Firebase project config:
+  // apiKey: "YOUR_API_KEY",
+  // authDomain: "your-project.firebaseapp.com",
+  // projectId: "your-project-id",
+  // storageBucket: "your-project.appspot.com",
+  // messagingSenderId: "123456789",
+  // appId: "1:123456789:web:abc123"
+};
+
+const CloudStorage = {
+  _db: null,
+  _initialized: false,
+
+  // Initialize Firebase — call once at app start
+  init: async function() {
+    if (!CLOUD_ENABLED || this._initialized) return false;
+    try {
+      // Dynamically load Firebase SDK
+      if (typeof firebase === "undefined") {
+        await new Promise((resolve, reject) => {
+          const s1 = document.createElement("script");
+          s1.src = "https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js";
+          s1.onload = () => {
+            const s2 = document.createElement("script");
+            s2.src = "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js";
+            s2.onload = resolve;
+            s2.onerror = reject;
+            document.head.appendChild(s2);
+          };
+          s1.onerror = reject;
+          document.head.appendChild(s1);
+        });
+      }
+      firebase.initializeApp(FIREBASE_CONFIG);
+      this._db = firebase.firestore();
+      this._initialized = true;
+      console.log("☁️ Cloud storage initialized");
+      return true;
+    } catch (e) {
+      console.warn("☁️ Cloud storage failed to initialize:", e);
+      return false;
+    }
+  },
+
+  // Save a complete match to Firestore
+  saveMatch: async function(matchData) {
+    if (!this._db) return null;
+    try {
+      const docId = matchData.setup.player1.replace(/\s/g,"_") + "_vs_" +
+                    matchData.setup.player2.replace(/\s/g,"_") + "_" +
+                    matchData.setup.date + "_" + Date.now();
+      const doc = {
+        setup: matchData.setup,
+        points: matchData.points,
+        score: matchData.score,
+        matchTime: matchData.matchTime,
+        conditions: matchData.conditions || "",
+        themeId: matchData.themeId || "original",
+        savedAt: Date.now(),
+        pointCount: matchData.points.length,
+        matchComplete: !!matchData.matchTime.end,
+      };
+      await this._db.collection("matches").doc(docId).set(doc);
+      console.log("☁️ Match saved:", docId);
+      return docId;
+    } catch (e) {
+      console.error("☁️ Save failed:", e);
+      return null;
+    }
+  },
+
+  // Auto-save current session (upsert by session key)
+  autoSave: async function(sessionKey, matchData) {
+    if (!this._db) return false;
+    try {
+      await this._db.collection("sessions").doc(sessionKey).set({
+        ...matchData,
+        savedAt: Date.now(),
+      }, { merge: true });
+      return true;
+    } catch (e) {
+      console.warn("☁️ Auto-save failed:", e);
+      return false;
+    }
+  },
+
+  // List all saved matches
+  listMatches: async function() {
+    if (!this._db) return [];
+    try {
+      const snap = await this._db.collection("matches")
+        .orderBy("savedAt", "desc")
+        .limit(50)
+        .get();
+      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    } catch (e) {
+      console.error("☁️ List failed:", e);
+      return [];
+    }
+  },
+
+  // Load a specific match
+  loadMatch: async function(docId) {
+    if (!this._db) return null;
+    try {
+      const doc = await this._db.collection("matches").doc(docId).get();
+      return doc.exists ? { id: doc.id, ...doc.data() } : null;
+    } catch (e) {
+      console.error("☁️ Load failed:", e);
+      return null;
+    }
+  },
+
+  // Delete a match
+  deleteMatch: async function(docId) {
+    if (!this._db) return false;
+    try {
+      await this._db.collection("matches").doc(docId).delete();
+      return true;
+    } catch (e) {
+      console.error("☁️ Delete failed:", e);
+      return false;
+    }
+  },
+};
+
+// ─── MATCH HISTORY MODAL ─────────────────────────────────────────────────────
+function MatchHistoryModal({ onLoad, onClose, T = THEMES.original }) {
+  const [matches, setMatches] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!CLOUD_ENABLED) {
+      // Load from localStorage history instead
+      try {
+        const raw = localStorage.getItem("tennistag_history");
+        setMatches(raw ? JSON.parse(raw) : []);
+      } catch(e) { setMatches([]); }
+      setLoading(false);
+      return;
+    }
+    CloudStorage.listMatches().then(m => {
+      setMatches(m);
+      setLoading(false);
+    }).catch(e => {
+      setError("Failed to load matches");
+      setLoading(false);
+    });
+  }, []);
+
+  return (
+    React.createElement('div', { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.88)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },}
+      , React.createElement('div', { style: { background: T.card, borderRadius: 16, padding: 24, maxWidth: 560, width: "100%", maxHeight: "85vh", display: "flex", flexDirection: "column", border: "2px solid " + T.accent, boxShadow: "0 20px 60px rgba(0,0,0,0.8)" },}
+        , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexShrink: 0 },}
+          , React.createElement('div', { style: { fontSize: 18, fontWeight: 900, color: T.text, fontFamily: T.fontDisplay },}, "📂 Match History")
+          , React.createElement('button', { onClick: onClose, style: { background: "transparent", border: "1px solid " + T.border, color: T.textMuted, borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 14 },}, "✕")
+        )
+        , loading ? (
+          React.createElement('div', { style: { textAlign: "center", padding: 40, color: T.textMuted },}, "Loading...")
+        ) : error ? (
+          React.createElement('div', { style: { textAlign: "center", padding: 40, color: DANGER },}, error)
+        ) : matches.length === 0 ? (
+          React.createElement('div', { style: { textAlign: "center", padding: 40, color: T.textMuted, fontSize: 13 },}
+            , "No saved matches yet."
+            , React.createElement('br', null)
+            , CLOUD_ENABLED ? "Matches saved to cloud will appear here." : "Complete and export a match to save it to history."
+          )
+        ) : (
+          React.createElement('div', { style: { flex: 1, overflowY: "auto" },}
+            , matches.map(m => {
+              const su = m.setup || {};
+              return React.createElement('div', { key: m.id || m.savedAt, style: { padding: "10px 14px", borderRadius: 8, border: "1px solid " + T.border, marginBottom: 8, cursor: "pointer", background: T.card2, transition: "all 0.15s" },
+                onClick: () => onLoad(m),}
+                , React.createElement('div', { style: { fontWeight: 800, fontSize: 13, color: T.text },}, su.player1 || "?", " vs ", su.player2 || "?")
+                , React.createElement('div', { style: { fontSize: 11, color: T.textMuted, marginTop: 2 },}
+                  , su.surface || "", " · ", su.date || "", su.tournament ? " · " + su.tournament : ""
+                  , " · ", m.pointCount || 0, " pts"
+                  , m.matchComplete ? React.createElement('span', { style: { color: "#52c41a", fontWeight: 700, marginLeft: 6 },}, "✓ Complete") : ""
+                )
+              );
+            })
+          )
+        )
+      )
+    )
+  );
+}
+
 // ─── GOOGLE FONTS LOADER ──────────────────────────────────────────────────────
 function GoogleFonts() {
   return (
@@ -309,15 +517,25 @@ function fmtTime(ts) {
 }
 function pct(n, d) { return d ? Math.round((n / d) * 100) : 0; }
 
-// Derive serve side from game score: Deuce = even total points, Ad = odd total points
-// Standard tennis: server starts from Deuce (right) side at 0-0
+// Derive serve side from current point score
+// Regular games: Deuce = even total points, Ad = odd
+// Tiebreaks/Super TB: numeric scores, same even/odd rule
 function deriveServeSide(scorePoints) {
+  const p1v = scorePoints.p1;
+  const p2v = scorePoints.p2;
+  // Check if scores are numeric (tiebreak mode)
+  const p1n = Number(p1v);
+  const p2n = Number(p2v);
+  if (!isNaN(p1n) && !isNaN(p2n) && (p1n > 3 || p2n > 3 || (p1v !== "0" && p1v !== "15" && p1v !== "30" && p1v !== "40" && p1v !== "AD"))) {
+    // Numeric tiebreak scoring — total points determines side
+    const total = p1n + p2n;
+    return total % 2 === 0 ? "Deuce" : "Ad";
+  }
+  // Regular game scoring
   const seq = ["0","15","30","40","AD"];
-  const p1n = seq.indexOf(scorePoints.p1);
-  const p2n = seq.indexOf(scorePoints.p2);
-  // Total points played in this game (approximate from score indices)
-  // Deuce side = even sum, Ad side = odd sum
-  const total = p1n + p2n;
+  const p1i = seq.indexOf(p1v);
+  const p2i = seq.indexOf(p2v);
+  const total = (p1i >= 0 ? p1i : 0) + (p2i >= 0 ? p2i : 0);
   return total % 2 === 0 ? "Deuce" : "Ad";
 }
 
@@ -418,16 +636,28 @@ function rebuildScore(pts, fmt, superTieAt11) {
     server: "p1",
     matchWinner: null,
     superTieBreak: false,
+    tieBreak: false,       // regular tiebreak at 6-6
+    tieBreakPts: 0,        // total points played in tiebreak (for server rotation)
+    tieBreakServer: "p1",  // who serves first in tiebreak
   };
   for (const p of pts) {
     const winner = p.pointWinner;
     if (!winner || sc.matchWinner) continue;
     const loser = winner === "p1" ? "p2" : "p1";
 
+    // ── SUPER TIE-BREAK (deciding set, first to 10) ──
     if (sc.superTieBreak) {
       sc.points[winner] = String(Number(sc.points[winner]) + 1);
       const wp = Number(sc.points[winner]);
       const lp = Number(sc.points[loser]);
+      // Server rotation: first point by initial server, then alternate every 2
+      sc.tieBreakPts++;
+      const tbTotal = sc.tieBreakPts;
+      if (tbTotal === 1) {
+        sc.server = sc.server === "p1" ? "p2" : "p1";
+      } else if (tbTotal > 1 && (tbTotal - 1) % 2 === 0) {
+        sc.server = sc.server === "p1" ? "p2" : "p1";
+      }
       if (wp >= 10 && wp - lp >= 2) {
         sc.sets[sc.currentSet][winner]++;
         sc.matchWinner = winner;
@@ -435,6 +665,47 @@ function rebuildScore(pts, fmt, superTieAt11) {
       continue;
     }
 
+    // ── REGULAR TIEBREAK (6-6, first to 7) ──
+    if (sc.tieBreak) {
+      sc.points[winner] = String(Number(sc.points[winner]) + 1);
+      const wp = Number(sc.points[winner]);
+      const lp = Number(sc.points[loser]);
+      // Server rotation: first server serves 1 point, then alternate every 2
+      sc.tieBreakPts++;
+      const tbTotal = sc.tieBreakPts;
+      if (tbTotal === 1) {
+        sc.server = sc.server === "p1" ? "p2" : "p1";
+      } else if (tbTotal > 1 && (tbTotal - 1) % 2 === 0) {
+        sc.server = sc.server === "p1" ? "p2" : "p1";
+      }
+      if (wp >= 7 && wp - lp >= 2) {
+        // Tiebreak won — set goes 7-6
+        sc.games[winner]++;
+        sc.sets[sc.currentSet][winner] = sc.games[winner];
+        sc.sets[sc.currentSet][loser] = sc.games[loser];
+        sc.tieBreak = false;
+        sc.tieBreakPts = 0;
+        sc.games = { p1: 0, p2: 0 };
+        sc.points = { p1: "0", p2: "0" };
+        // Server after tiebreak: the player who received first in the tiebreak
+        sc.server = sc.tieBreakServer === "p1" ? "p2" : "p1";
+        const sW = setsNeeded(fmt);
+        const setsWonByWinner = sc.sets.filter(st => st[winner] > st[loser]).length;
+        if (setsWonByWinner >= sW) { sc.matchWinner = winner; continue; }
+        const p1s = sc.sets.filter(st => st.p1 > st.p2).length;
+        const p2s = sc.sets.filter(st => st.p2 > st.p1).length;
+        sc.currentSet++;
+        sc.sets.push({ p1: 0, p2: 0 });
+        if (superTieAt11 && p1s === 1 && p2s === 1) {
+          sc.superTieBreak = true;
+          sc.tieBreakPts = 0;
+          sc.points = { p1: "0", p2: "0" };
+        }
+      }
+      continue;
+    }
+
+    // ── REGULAR GAME SCORING ──
     const wp = sc.points[winner]; const lp = sc.points[loser];
     let gameWon = false;
     if (wp === "AD") { gameWon = true; }
@@ -454,7 +725,18 @@ function rebuildScore(pts, fmt, superTieAt11) {
 
     const gW = sc.games[winner], gL = sc.games[loser];
     const target = getSetTarget(fmt);
-    let setWon = (gW >= target && gW - gL >= 2) || (gW === target + 1 && gL === target);
+
+    // Check if we've reached tiebreak territory (both at target games, e.g. 6-6)
+    if (gW === target && gL === target) {
+      // Enter tiebreak
+      sc.tieBreak = true;
+      sc.tieBreakPts = 0;
+      sc.tieBreakServer = sc.server; // who serves first in tiebreak
+      sc.points = { p1: "0", p2: "0" };
+      continue;
+    }
+
+    let setWon = (gW >= target && gW - gL >= 2);
     if (!setWon) continue;
 
     sc.sets[sc.currentSet][winner] = gW;
@@ -470,6 +752,7 @@ function rebuildScore(pts, fmt, superTieAt11) {
     sc.sets.push({ p1: 0, p2: 0 });
     if (superTieAt11 && p1s === 1 && p2s === 1) {
       sc.superTieBreak = true;
+      sc.tieBreakPts = 0;
       sc.points = { p1: "0", p2: "0" };
     }
   }
@@ -564,19 +847,32 @@ function calcStats(points) {
 function exportCSV(points, setup) {
   // CSV — verified field order (one row per point, all fields)
   const hdrs = [
-    "Pt#", "Server", "ServerUTR", "ServerHand",
+    "Pt#", "Timestamp", "ElapsedMin", "Set", "GameScore", "PointScore",
+    "Server", "ServerUTR", "ServerHand",
     "ServeSide", "ServeType", "ServeSpin", "ServeZone", "ServeFault",
-    "ReturnHand", "ReturnLandZone",
+    "ReturnHand", "ReturnPosition", "ReturnLandZone", "ReturnLandAbsolute",
     "Serve+1Shot", "Serve+1Dir", "Return+1Shot", "Return+1Dir",
-    "RallyLength", "Outcome", "ErrorShot", "WinningShot",
+    "RallyLength", "Outcome", "ErrorShot", "ErrorDirection", "WinningShot",
     "NetApproach", "PressurePoint",
     "PointWinner", "WinnerUTR", "WinnerHand"
   ];
+  const matchStartTs = points.length > 0 && points[0].timestamp ? points[0].timestamp : 0;
   const rows = points.map((p, i) => {
     const isP1Server = p.server === "p1";
     const isP1Winner = p.pointWinner === "p1";
+    const ss = p.scoreSnapshot || {};
+    const setNum = ss.setNum || "";
+    const gameStr = ss.games ? ss.games.p1 + "-" + ss.games.p2 : "";
+    const ptsStr = ss.points ? ss.points.p1 + "-" + ss.points.p2 : "";
+    const ts = p.timestamp ? new Date(p.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
+    const elapsedMin = p.timestamp && matchStartTs ? Math.round((p.timestamp - matchStartTs) / 60000) : "";
     return [
       i + 1,
+      ts,
+      elapsedMin,
+      setNum,
+      gameStr,
+      ptsStr,
       isP1Server ? setup.player1 : setup.player2,
       isP1Server ? (setup.p1utr || "") : (setup.p2utr || ""),
       isP1Server ? (setup.p1hand || "") : (setup.p2hand || ""),
@@ -587,7 +883,9 @@ function exportCSV(points, setup) {
       (p.serveFault && p.serveFault !== "?") ? p.serveFault : "",
       p.dfFaultType || "",
       p.returnHand || "",
+      p.returnPosition || "",
       p.returnLandZone || "",
+      p.returnLandAbsolute || "",
       p.servePlusOne || "",
       p.sp1Dir || "",
       p.returnPlusOne || "",
@@ -595,6 +893,7 @@ function exportCSV(points, setup) {
       p.rallyLength || "",
       p.outcome || "",
       p.errorShot || "",
+      p.errorDirection || "",
       p.shotType || "",
       p.netApproach ? "Yes" : "No",
       p.pressurePoint ? "Yes" : "No",
@@ -1400,6 +1699,7 @@ function ScoreBanner({ setup, score, matchTime, T = THEMES.original }) {
       , React.createElement('div', { style: { padding: "2px 14px 4px", display: "flex", gap: 12, alignItems: "center" },}
         , React.createElement('span', { style: { fontSize: 11, color: MUTED },}, matchTime.start ? fmtDuration(matchTime.end ? matchTime.end - matchTime.start : elapsed) : "Not started")
         , superTieBreak && React.createElement('span', { style: { fontSize: 10, color: ACCENT, fontWeight: 700 },}, "Super Tie-Break" )
+        , score.tieBreak && React.createElement('span', { style: { fontSize: 10, color: "#ff6b35", fontWeight: 700 },}, "Tie-Break" )
       )
     )
   );
@@ -1687,11 +1987,11 @@ function ScoreOverwriteModal({ setup, score, onApply, onClose, T = THEMES.origin
 const EMPTY_TAG = {
   serveType: null, serveSpin: null, serveSide: null, serveZone: null, serveFault: null,
   dfFaultType: null,
-  returnHand: null, returnLandZone: null,
+  returnHand: null, returnPosition: null, returnLandZone: null,
   servePlusOne: null, sp1Dir: null,
   returnPlusOne: null, rp1Dir: null,
-  rallyLength: null, outcome: null, shotType: null, errorShot: null,
-  netApproach: false, pressurePoint: false, pointWinner: null,
+  rallyLength: null, outcome: null, shotType: null, errorShot: null, errorDirection: null,
+  netApproach: false, netPlayer: null, pressurePoint: false, pointWinner: null,
 };
 
 function StepHeader({ num, label, color = "#5abaff", fontFamily }) {
@@ -1703,10 +2003,13 @@ function StepHeader({ num, label, color = "#5abaff", fontFamily }) {
   );
 }
 
-function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES.original, courtFlipped = false, onFlipCourt }) {
+function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, undoPending, undoStack, points, T = THEMES.original, courtFlipped = false, onFlipCourt }) {
   const { player1, player2 } = setup;
   const { server } = score;
   const setT = (k, v) => setTag(p => ({ ...p, [k]: v }));
+  // Dynamic server/returner names based on who is actually serving
+  const serverName = server === "p1" ? player1 : player2;
+  const returnerName = server === "p1" ? player2 : player1;
 
   const inFaultMode = tag.serveType === "1st Serve" && !!tag.serveFault;
   const isError = tag.outcome === "Forced Error" || tag.outcome === "Unforced Error";
@@ -1715,7 +2018,7 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES
   const isDoubleFault = tag.outcome === "Double Fault";
   const isReturnWinner = tag.outcome === "Return Winner";
   const isWinner = !isError && !isReturnError && !isReturnWinner &&
-    (tag.outcome === "Winner" || isAce || tag.outcome === "Let" || !tag.outcome);
+    (tag.outcome === "Winner" || isAce || !tag.outcome);
   // No rally for ace, double fault, return winner, return error
   const noRally = isAce || isDoubleFault || isReturnWinner || isReturnError;
   // Auto-fill rally for short points
@@ -1799,7 +2102,7 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES
         )
 
         /* Court zone picker — replaces Wide/Body/T */
-        , React.createElement(CourtZonePicker, { side: autoServeSide, value: tag.serveZone, onChange: v => setT("serveZone", v), serverName: player1, returnerName: player2, flipped: courtFlipped, onFlip: onFlipCourt,} )
+        , React.createElement(CourtZonePicker, { side: autoServeSide, value: tag.serveZone, onChange: v => setT("serveZone", v), serverName: serverName, returnerName: returnerName, flipped: courtFlipped, onFlip: onFlipCourt,} )
 
 
         /* 1st serve fault */
@@ -1838,13 +2141,22 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES
               ))
             )
           )
+          , React.createElement('div', { style: { marginBottom: 6 },}
+            , React.createElement('div', { style: s.sectionLabel,}, "Returner Position ", React.createElement('span', { style: { fontWeight: 400, color: MUTED, fontSize: 9, textTransform: "none", letterSpacing: 0 },}, "(optional)"))
+            , React.createElement('div', { style: s.chipRow,}
+              , ["Behind Baseline", "On Baseline", "Inside Baseline"].map(pos => (
+                React.createElement('button', { key: pos, style: { ...s.chip(tag.returnPosition === pos, "#5b2c6f"), flex: 1, textAlign: "center", fontSize: 11 },
+                  onClick: () => setT("returnPosition", tag.returnPosition === pos ? null : pos),}, pos)
+              ))
+            )
+          )
           , React.createElement('div', { style: s.sectionLabel,}, "Landing Zone" )
           , React.createElement(ReturnLandPicker, {
             value: tag.returnLandZone,
             onChange: v => setT("returnLandZone", v),
             serveSide: autoServeSide,
-            serverName: player1,
-            returnerName: player2,
+            serverName: serverName,
+            returnerName: returnerName,
             flipped: courtFlipped,
             onFlip: onFlipCourt,}
           )
@@ -1856,13 +2168,19 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES
         React.createElement('div', { style: { ...s.tagSection, background: T.bgDeep, borderBottom: "1px solid " + T.border },}
           , React.createElement(StepHeader, { num: "③", label: "Serve +1" , fontFamily: T.fontDisplay, color: "#5ab8ff",} )
           , React.createElement('div', { style: { ...s.sectionLabel, marginBottom: 4 },}, "Shot Type" )
-          , React.createElement('div', { style: s.chipRow,}
-            , ["Forehand","Backhand","Volley","Drop Shot","N/A"].map(o => (
-              React.createElement('button', { key: o, style: { ...s.chip(tag.servePlusOne === o, NAVY), flex: 1, textAlign: "center" },
+          , React.createElement('div', { style: { ...s.chipRow, marginBottom: 4 },}
+            , ["Forehand","Backhand","Slice","Volley"].map(o => (
+              React.createElement('button', { key: o, style: { ...s.chip(tag.servePlusOne === o, NAVY), flex: 1, textAlign: "center", fontSize: 12 },
                 onClick: () => setT("servePlusOne", tag.servePlusOne === o ? null : o),}, o)
             ))
           )
-          , tag.servePlusOne && tag.servePlusOne !== "N/A" && tag.servePlusOne !== "Drop Shot" && (
+          , React.createElement('div', { style: s.chipRow,}
+            , ["Approach","Drop Shot","Overhead","N/A"].map(o => (
+              React.createElement('button', { key: o, style: { ...s.chip(tag.servePlusOne === o, NAVY), flex: 1, textAlign: "center", fontSize: 12 },
+                onClick: () => setT("servePlusOne", tag.servePlusOne === o ? null : o),}, o)
+            ))
+          )
+          , tag.servePlusOne && tag.servePlusOne !== "N/A" && tag.servePlusOne !== "Drop Shot" && tag.servePlusOne !== "Overhead" && (
             React.createElement('div', { style: { marginTop: 6 },}
               , React.createElement('div', { style: { ...s.sectionLabel, marginBottom: 4 },}, "Direction " , React.createElement('span', { style: { fontWeight: 400, color: MUTED, fontSize: 9, textTransform: "none", letterSpacing: 0 },}, "(optional)"))
               , React.createElement('div', { style: s.chipRow,}
@@ -1881,13 +2199,19 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES
         React.createElement('div', { style: { ...s.tagSection, background: T.bgDeep, borderBottom: "1px solid " + T.border },}
           , React.createElement(StepHeader, { num: "④", label: "Return +1" , fontFamily: T.fontDisplay, color: "#5affc8",} )
           , React.createElement('div', { style: { ...s.sectionLabel, marginBottom: 4 },}, "Shot Type" )
-          , React.createElement('div', { style: s.chipRow,}
-            , ["Forehand","Backhand","Volley","N/A"].map(o => (
-              React.createElement('button', { key: o, style: { ...s.chip(tag.returnPlusOne === o, TEAL), flex: 1, textAlign: "center" },
+          , React.createElement('div', { style: { ...s.chipRow, marginBottom: 4 },}
+            , ["Forehand","Backhand","Slice","Volley"].map(o => (
+              React.createElement('button', { key: o, style: { ...s.chip(tag.returnPlusOne === o, TEAL), flex: 1, textAlign: "center", fontSize: 12 },
                 onClick: () => setT("returnPlusOne", tag.returnPlusOne === o ? null : o),}, o)
             ))
           )
-          , tag.returnPlusOne && tag.returnPlusOne !== "N/A" && (
+          , React.createElement('div', { style: s.chipRow,}
+            , ["Approach","Drop Shot","Lob","N/A"].map(o => (
+              React.createElement('button', { key: o, style: { ...s.chip(tag.returnPlusOne === o, TEAL), flex: 1, textAlign: "center", fontSize: 12 },
+                onClick: () => setT("returnPlusOne", tag.returnPlusOne === o ? null : o),}, o)
+            ))
+          )
+          , tag.returnPlusOne && tag.returnPlusOne !== "N/A" && tag.returnPlusOne !== "Drop Shot" && tag.returnPlusOne !== "Lob" && (
             React.createElement('div', { style: { marginTop: 6 },}
               , React.createElement('div', { style: { ...s.sectionLabel, marginBottom: 4 },}, "Direction " , React.createElement('span', { style: { fontWeight: 400, color: MUTED, fontSize: 9, textTransform: "none", letterSpacing: 0 },}, "(optional)"))
               , React.createElement('div', { style: s.chipRow,}
@@ -1909,13 +2233,21 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES
             , OUTCOMES.map(o => {
               const isRetErr = o === "Return Error";
               const isRetWin = o === "Return Winner";
-              const chipCol = isRetErr ? DANGER : isRetWin ? "#52c41a" : o === "Ace" ? "#52c41a" : o === "Double Fault" ? DANGER : DANGER;
+              const isLet = o === "Let";
+              const chipCol = isLet ? "#7fa8c0" : isRetErr ? DANGER : isRetWin ? "#52c41a" : o === "Ace" ? "#52c41a" : o === "Double Fault" ? DANGER : DANGER;
               return (
                 React.createElement('button', { key: o, style: { ...s.chip(tag.outcome === o, chipCol), fontSize: 12 },
-                  onClick: () => setTag(p => ({
+                  onClick: () => {
+                    if (isLet) {
+                      // Let = replay — reset tag keeping serve type, don't log
+                      setTag(prev => ({ ...EMPTY_TAG, serveType: prev.serveType }));
+                      return;
+                    }
+                    setTag(p => ({
                     ...p,
                     outcome: p.outcome === o ? null : o,
                     errorShot: (o === "Forced Error" || o === "Unforced Error") ? p.errorShot : null,
+                    errorDirection: (o === "Forced Error" || o === "Unforced Error") ? p.errorDirection : null,
                     shotType: (o === "Forced Error" || o === "Unforced Error" || o === "Return Error") ? null : p.shotType,
                     // Auto-assign point winner for clear outcomes
                     pointWinner: o === "Ace" || o === "Return Error" ? server
@@ -1924,7 +2256,7 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES
                       : p.pointWinner,
                     // Auto-set rally for short points
                     rallyLength: (o === "Ace" || o === "Double Fault" || o === "Return Error" || o === "Return Winner") ? "0-4" : p.rallyLength,
-                  })),}
+                  }));},}
                   , o
                 )
               );
@@ -1968,6 +2300,15 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES
             React.createElement('div', { style: { marginTop: 7 },}
               , React.createElement('div', { style: { fontSize: 9, color: ORANGE, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase", marginBottom: 4 },}, "Error Shot Type"  )
               , React.createElement(ShotPicker, { value: tag.errorShot, onChange: v => setT("errorShot", v), accentColor: ORANGE,} )
+              , React.createElement('div', { style: { marginTop: 7 },}
+                , React.createElement('div', { style: { fontSize: 9, color: DANGER, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase", marginBottom: 4 },}, "Error Direction ", React.createElement('span', { style: { fontWeight: 400, color: MUTED, fontSize: 9, textTransform: "none", letterSpacing: 0 },}, "(optional)"))
+                , React.createElement('div', { style: s.chipRow,}
+                  , ["Net", "Long", "Wide"].map(d => (
+                    React.createElement('button', { key: d, style: { ...s.chip(tag.errorDirection === d, d === "Net" ? "#c0392b" : d === "Long" ? "#e07b54" : "#d4a017"), flex: 1, textAlign: "center", fontSize: 13, fontWeight: 700 },
+                      onClick: () => setT("errorDirection", tag.errorDirection === d ? null : d),}, d)
+                  ))
+                )
+              )
             )
           )
 
@@ -1981,8 +2322,33 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES
         )
       )
 
-      /* Net + Pressure toggles */
-      , React.createElement(Toggle, { label: "Net Approach" , value: tag.netApproach, onChange: v => setT("netApproach", v),} )
+      /* Net approach — which player */
+      , React.createElement('div', { style: { ...s.tagSection, display: "flex", alignItems: "center", justifyContent: "space-between" },}
+        , React.createElement('div', null
+          , React.createElement('div', { style: { ...s.sectionLabel, marginBottom: 2 },}, "Net Approach")
+          , React.createElement('div', { style: { fontSize: 10, color: MUTED },}, "Who approached the net?")
+        )
+        , React.createElement('div', { style: { display: "flex", gap: 4 },}
+          , React.createElement('button', { onClick: () => setTag(p => ({ ...p, netApproach: p.netApproach === "server" ? false : "server", netPlayer: p.netApproach === "server" ? null : server })),
+            style: { padding: "5px 10px", borderRadius: 7, fontSize: 11, fontWeight: 700, cursor: "pointer",
+              border: "2px solid " + (tag.netApproach === "server" ? P1C : "#1e3a5f"),
+              background: tag.netApproach === "server" ? P1C + "25" : "transparent",
+              color: tag.netApproach === "server" ? P1C : MUTED },}
+            , serverName.split(" ")[0])
+          , React.createElement('button', { onClick: () => setTag(p => ({ ...p, netApproach: p.netApproach === "returner" ? false : "returner", netPlayer: p.netApproach === "returner" ? null : (server === "p1" ? "p2" : "p1") })),
+            style: { padding: "5px 10px", borderRadius: 7, fontSize: 11, fontWeight: 700, cursor: "pointer",
+              border: "2px solid " + (tag.netApproach === "returner" ? P2C : "#1e3a5f"),
+              background: tag.netApproach === "returner" ? P2C + "25" : "transparent",
+              color: tag.netApproach === "returner" ? P2C : MUTED },}
+            , returnerName.split(" ")[0])
+          , React.createElement('button', { onClick: () => setTag(p => ({ ...p, netApproach: p.netApproach === "both" ? false : "both", netPlayer: "both" })),
+            style: { padding: "5px 10px", borderRadius: 7, fontSize: 11, fontWeight: 700, cursor: "pointer",
+              border: "2px solid " + (tag.netApproach === "both" ? ACCENT : "#1e3a5f"),
+              background: tag.netApproach === "both" ? ACCENT + "25" : "transparent",
+              color: tag.netApproach === "both" ? ACCENT : MUTED },}
+            , "Both")
+        )
+      )
       , !inFaultMode && (
         React.createElement('div', null
           , React.createElement(Toggle, { label: "🔴 Pressure Point"  , sub: "Auto-detected from score · tap to override"       , value: tag.pressurePoint || detectPressurePoint(score, setup.format), onChange: v => setT("pressurePoint", v), activeColor: "#c0392b",} )
@@ -2033,18 +2399,27 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES
         )
       )
 
-      /* ── ALWAYS-VISIBLE UNDO ── */
-      , React.createElement('div', { style: { padding: "6px 12px", borderTop: "1px solid " + T.border, flexShrink: 0, background: T.bgDeep },}
+      /* ── ALWAYS-VISIBLE UNDO / REDO ── */
+      , React.createElement('div', { style: { padding: "6px 12px", borderTop: "1px solid " + T.border, flexShrink: 0, background: T.bgDeep, display: "flex", gap: 6 },}
         , React.createElement('button', { onClick: onUndo, disabled: !points.length, style: {
-          width: "100%", padding: "8px 0", borderRadius: T.btnRadius || 8,
-          fontWeight: 700, fontSize: 13, cursor: !points.length ? "not-allowed" : "pointer",
+          flex: 3, padding: "8px 0", borderRadius: T.btnRadius || 8,
+          fontWeight: 700, fontSize: 12, cursor: !points.length ? "not-allowed" : "pointer",
           border: "1.5px solid " + (!points.length ? T.border : T.danger),
           background: !points.length ? "transparent" : T.danger + "18",
           color: !points.length ? T.textMuted : T.danger,
           fontFamily: T.fontBody, transition: "all 0.15s", opacity: !points.length ? 0.4 : 1,
+          animation: undoPending ? "pulse 0.5s ease-in-out infinite alternate" : "none",
         },}
-          , "↩ Undo" + (points.length > 0 ? " (pt " + points.length + ")" : " — no points")
+          , undoPending ? "⚠ Tap again to confirm undo" : "↩ Undo" + (points.length > 0 ? " (pt " + points.length + ")" : "")
         )
+        , undoStack.length > 0 && React.createElement('button', { onClick: onRedo, style: {
+          flex: 1, padding: "8px 0", borderRadius: T.btnRadius || 8,
+          fontWeight: 700, fontSize: 12, cursor: "pointer",
+          border: "1.5px solid #40916c",
+          background: "#40916c18",
+          color: "#40916c",
+          fontFamily: T.fontBody,
+        },}, "↪ Redo")
       )
       /* ── LOG / FAULT ACTION ── */
       , React.createElement('div', { style: { ...s.actionBar, flexShrink: 0 },}
@@ -2094,13 +2469,49 @@ function PointLog({ points, setup }) {
 
 // ─── STATS / REPORT SCREEN ────────────────────────────────────────────────────
 function StatsScreen({ points, setup, score, matchTime }) {
-  const stats = calcStats(points);
   const { player1, player2 } = setup;
   const duration = matchTime.start && matchTime.end ? matchTime.end - matchTime.start : null;
   const [repTab, setRepTab] = useState("overview");
+  const [setFilter, setSetFilter] = useState("all"); // "all", "1", "2", "3", etc.
+
+  // Determine how many sets are in the data
+  const setsInMatch = [];
+  points.forEach(p => {
+    const sn = _optionalChain([p, 'optionalAccess', _ => _.scoreSnapshot, 'optionalAccess', _2 => _2.setNum]);
+    if (sn && !setsInMatch.includes(sn)) setsInMatch.push(sn);
+  });
+  setsInMatch.sort((a, b) => a - b);
+
+  // Filter points by set
+  const filteredPoints = setFilter === "all" ? points
+    : points.filter(p => _optionalChain([p, 'optionalAccess', _3 => _3.scoreSnapshot, 'optionalAccess', _4 => _4.setNum]) === Number(setFilter));
+  const stats = calcStats(filteredPoints);
 
   return (
     React.createElement('div', { style: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },}
+      /* Set filter bar */
+      , setsInMatch.length > 1 && (
+        React.createElement('div', { style: { display: "flex", gap: 4, padding: "6px 12px", background: "#0a1628", borderBottom: "1px solid #1e3a5f", flexShrink: 0, alignItems: "center" },}
+          , React.createElement('span', { style: { fontSize: 9, color: MUTED, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", marginRight: 6 },}, "Filter:")
+          , React.createElement('button', { onClick: () => setSetFilter("all"),
+            style: { padding: "4px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer",
+              border: "1.5px solid " + (setFilter === "all" ? ACCENT : "#1e3a5f"),
+              background: setFilter === "all" ? ACCENT + "25" : "transparent",
+              color: setFilter === "all" ? ACCENT : MUTED },}, "All Sets")
+          , setsInMatch.map(sn => (
+            React.createElement('button', { key: sn, onClick: () => setSetFilter(String(sn)),
+              style: { padding: "4px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer",
+                border: "1.5px solid " + (setFilter === String(sn) ? P1C : "#1e3a5f"),
+                background: setFilter === String(sn) ? P1C + "25" : "transparent",
+                color: setFilter === String(sn) ? P1C : MUTED },}, "Set " + sn)
+          ))
+          , setFilter !== "all" && (
+            React.createElement('span', { style: { fontSize: 10, color: ACCENT, fontWeight: 600, marginLeft: 8 },}
+              , "Showing " + filteredPoints.length + " / " + points.length + " pts"
+            )
+          )
+        )
+      )
       , React.createElement('div', { style: { display: "flex", background: "#0a1628", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 },}
         , [["overview","Overview"],["serve","Serve Zones"],["return","Return"],["rally","Rally & BP"]].map(([k, label]) => (
           React.createElement('button', { key: k, onClick: () => setRepTab(k), style: { flex: 1, padding: "7px 0", fontSize: 11, fontWeight: 700, cursor: "pointer", color: repTab === k ? ACCENT : MUTED, borderBottom: repTab === k ? "2px solid " + ACCENT : "2px solid transparent", background: "transparent", border: "none" },}, label)
@@ -2321,14 +2732,20 @@ function App() {
 
   const canTriggerSuperTie = (fmt) => ["Best of 3","Best of 3 Short Sets"].includes(fmt);
 
+  // ── TAG PANEL SCROLL REF ─────────────────────────────────────────
+  const tagPanelRef = useRef(null);
+
   // ── LOCAL SAVE / RESTORE ──────────────────────────────────────────
   const SAVE_KEY = "tennistag_session";
 
-  const saveSession = useCallback((pts, sc, su, mt, cond, tid) => {
+  const saveSession = useCallback((pts, sc, su, mt, cond, tid, extras) => {
     try {
       localStorage.setItem(SAVE_KEY, JSON.stringify({
         points: pts, score: sc, setup: su,
         matchTime: mt, conditions: cond, themeId: tid,
+        superTieAt11: extras.superTieAt11 || false,
+        courtFlipped: extras.courtFlipped || false,
+        currentTag: extras.currentTag || null,
         savedAt: Date.now(),
       }));
     } catch(e) { /* storage full or unavailable */ }
@@ -2355,6 +2772,9 @@ function App() {
     setMatchTime(savedSession.matchTime || { start: null, end: null });
     setConditions(savedSession.conditions || "");
     setThemeId(savedSession.themeId || "original");
+    setSuperTieAt11(savedSession.superTieAt11 || false);
+    setCourtFlipped(savedSession.courtFlipped || false);
+    if (savedSession.currentTag) setTag(savedSession.currentTag);
     setSavedSession(null);
     setShowRestore(false);
     setTab("tag");
@@ -2366,11 +2786,18 @@ function App() {
     setShowRestore(false);
   };
 
-  // Auto-save whenever key state changes
+  // Auto-save whenever key state changes (debounced)
+  const saveTimerRef = useRef(null);
   useEffect(() => {
     if (!setup) return;
-    saveSession(points, score, setup, matchTime, conditions, themeId);
-  }, [points, score, matchTime, conditions, themeId, setup]);
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      saveSession(points, score, setup, matchTime, conditions, themeId, {
+        superTieAt11, courtFlipped, currentTag: tag,
+      });
+    }, 2000); // debounce: save every 2 seconds max
+    return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
+  }, [points, score, matchTime, conditions, themeId, setup, superTieAt11, courtFlipped, tag]);
 
   const handleStart = (form) => {
     localStorage.removeItem("tennistag_session");
@@ -2398,12 +2825,42 @@ function App() {
     const autoPressure = detectPressurePoint(score, setup.format);
     const newPoint = {
       ...tag,
-      id: Date.now(),
+      id: Date.now() + "-" + points.length,
+      timestamp: Date.now(),
       server: srv,
       serveSide: deriveServeSide(score.points),
       pointWinner: autoW,
       rallyLength: autoR,
       pressurePoint: tag.pressurePoint || autoPressure,
+      // Map relative return zone → absolute court position
+      returnLandAbsolute: (function() {
+        const rz = tag.returnLandZone;
+        if (!rz || rz === "Net") return rz || "";
+        const side = deriveServeSide(score.points);
+        const isDeuce = side === "Deuce";
+        // Relative: Cross/Down-line/Centre × Deep/Mid
+        // Absolute: Deuce-side/Ad-side/Centre × Deep/Mid
+        const parts = rz.split("-");
+        const dir = parts[0]; // Cross, Down-line, Centre
+        const depth = parts.slice(1).join("-"); // Deep, Mid
+        if (dir === "Centre") return "Centre-" + depth;
+        // Deuce side: Down-line=Ad-side, Cross=Deuce-side
+        // Ad side: Down-line=Deuce-side, Cross=Ad-side
+        if (isDeuce) {
+          return (dir === "Down-line" ? "Ad-side" : "Deuce-side") + "-" + depth;
+        } else {
+          return (dir === "Down-line" ? "Deuce-side" : "Ad-side") + "-" + depth;
+        }
+      })(),
+      // Score snapshot at the time this point was played
+      scoreSnapshot: {
+        sets: JSON.parse(JSON.stringify(score.sets)),
+        games: { p1: score.games.p1, p2: score.games.p2 },
+        points: { p1: score.points.p1, p2: score.points.p2 },
+        setNum: score.currentSet + 1,
+        tieBreak: score.tieBreak || false,
+        superTieBreak: score.superTieBreak || false,
+      },
     };
     const newPoints = [...points, newPoint];
     setPoints(newPoints);
@@ -2422,6 +2879,8 @@ function App() {
     if (navigator.vibrate) navigator.vibrate(50);
     setLogFlash(true);
     setTimeout(() => setLogFlash(false), 400);
+    // Auto-scroll tag panel back to top
+    if (tagPanelRef.current) tagPanelRef.current.scrollTop = 0;
   };
 
   const handleSuperTieDecision = (useSuperTie) => {
@@ -2431,11 +2890,35 @@ function App() {
     setScore(rebuildScore(points, setup.format, useSuperTie));
   };
 
+  const [undoStack, setUndoStack] = useState([]);
+  const [undoPending, setUndoPending] = useState(false);
+  const undoTimerRef = useRef(null);
+
   const handleUndo = () => {
     if (!points.length) return;
+    if (!undoPending) {
+      // First tap — show confirmation briefly
+      setUndoPending(true);
+      undoTimerRef.current = setTimeout(() => setUndoPending(false), 2000);
+      return;
+    }
+    // Second tap within 2s — actually undo
+    clearTimeout(undoTimerRef.current);
+    setUndoPending(false);
+    const removed = points[points.length - 1];
     const np = points.slice(0, -1);
     setPoints(np);
     setScore(rebuildScore(np, setup.format, superTieAt11));
+    setUndoStack(prev => [...prev.slice(-4), removed]); // keep last 5
+  };
+
+  const handleRedo = () => {
+    if (!undoStack.length) return;
+    const restored = undoStack[undoStack.length - 1];
+    const np = [...points, restored];
+    setPoints(np);
+    setScore(rebuildScore(np, setup.format, superTieAt11));
+    setUndoStack(prev => prev.slice(0, -1));
   };
 
   const handleOverwriteApply = (correctedScore) => {
@@ -2448,10 +2931,38 @@ function App() {
   const handleEndMatch = () => setShowEndConfirm(true);
 
   const confirmEndMatch = () => {
-    if (!matchTime.end) setMatchTime(prev => ({ ...prev, end: Date.now() }));
+    const endTime = matchTime.end || Date.now();
+    if (!matchTime.end) setMatchTime(prev => ({ ...prev, end: endTime }));
     setShowEndConfirm(false);
     setTab("stats");
+    // Save to local match history
+    try {
+      const historyRaw = localStorage.getItem("tennistag_history");
+      const history = historyRaw ? JSON.parse(historyRaw) : [];
+      history.unshift({
+        id: "match_" + endTime,
+        setup: setup,
+        pointCount: points.length,
+        score: score,
+        matchTime: { start: matchTime.start, end: endTime },
+        conditions: conditions,
+        savedAt: endTime,
+        matchComplete: true,
+      });
+      // Keep last 50 matches in history
+      localStorage.setItem("tennistag_history", JSON.stringify(history.slice(0, 50)));
+    } catch(e) { /* history save failed */ }
+    // Cloud save if enabled
+    if (CLOUD_ENABLED) {
+      CloudStorage.saveMatch({
+        setup, points, score,
+        matchTime: { start: matchTime.start, end: endTime },
+        conditions, themeId,
+      });
+    }
   };
+
+  const [showHistory, setShowHistory] = useState(false);
 
   // Derived theme styles applied inline to root
   const tApp = {
@@ -2483,11 +2994,36 @@ function App() {
       , showRestore && savedSession && (
         React.createElement(RestoreModal, { session: savedSession, onRestore: restoreSession, onDiscard: discardSession,} )
       )
+      /* Match history modal */
+      , showHistory && (
+        React.createElement(MatchHistoryModal, {
+          onLoad: (m) => {
+            setShowHistory(false);
+            // If match has full point data (cloud), restore it
+            if (m.points && m.setup) {
+              setSetup(m.setup);
+              setPoints(m.points);
+              setScore(m.score || rebuildScore(m.points, m.setup.format, false));
+              setMatchTime(m.matchTime || { start: null, end: null });
+              setConditions(m.conditions || "");
+              setTab("stats");
+            }
+          },
+          onClose: () => setShowHistory(false),
+          T: T,}
+        )
+      )
       , React.createElement('div', { style: tHeader,}
         , React.createElement('div', { style: { fontSize: 22, fontWeight: 900, letterSpacing: 1, color: T.primary2, fontFamily: T.fontDisplay },}
           , T.prefix || "", "TennisTag Pro"
         )
-        , React.createElement('div', { style: { fontSize: 12, color: T.textMuted, fontFamily: T.fontBody },}, "iPad Match Analysis System"   )
+        , React.createElement('div', { style: { display: "flex", gap: 8, alignItems: "center" },}
+          , React.createElement('button', { onClick: () => setShowHistory(true), style: {
+            padding: "5px 12px", borderRadius: T.chipRadius || 8, fontSize: 11, fontWeight: 700,
+            cursor: "pointer", border: "1px solid " + T.border, background: T.card2,
+            color: T.textMuted, fontFamily: T.fontBody },}, "📂 History")
+          , React.createElement('span', { style: { fontSize: 12, color: T.textMuted, fontFamily: T.fontBody },}, "iPad Match Analysis System")
+        )
       )
       , React.createElement(SetupScreen, { onStart: handleStart, themeId: themeId, onThemeChange: setThemeId, T: T,} )
     )
@@ -2594,8 +3130,8 @@ function App() {
 
         , tab === "tag" && (
           React.createElement(React.Fragment, null
-            , React.createElement('div', { style: { width: 520, background: CARD, borderRight: `1px solid #1e3a5f`, display: "flex", flexDirection: "column", overflowY: "auto", flexShrink: 0 },}
-              , React.createElement(TagPanel, { setup: setup, score: score, tag: tag, setTag: setTag, onLog: handleLog, onUndo: handleUndo, points: points, T: T, courtFlipped: courtFlipped, onFlipCourt: handleFlipCourt,} )
+            , React.createElement('div', { ref: tagPanelRef, style: { width: 520, background: CARD, borderRight: `1px solid #1e3a5f`, display: "flex", flexDirection: "column", overflowY: "auto", flexShrink: 0 },}
+              , React.createElement(TagPanel, { setup: setup, score: score, tag: tag, setTag: setTag, onLog: handleLog, onUndo: handleUndo, onRedo: handleRedo, undoPending: undoPending, undoStack: undoStack, points: points, T: T, courtFlipped: courtFlipped, onFlipCourt: handleFlipCourt,} )
             )
             , React.createElement('div', { style: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },}
               , React.createElement('div', { style: { padding: "7px 10px", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 },}
@@ -2683,8 +3219,45 @@ function App() {
   );
 }
 
+// ─── ERROR BOUNDARY ──────────────────────────────────────────────────────────
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error: error };
+  }
+  componentDidCatch(error, errorInfo) {
+    console.error("TennisTag Error:", error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return React.createElement('div', { style: {
+        position: "fixed", inset: 0, background: "#0d1b2a",
+        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+        fontFamily: "'DM Sans','Segoe UI',sans-serif", padding: 40,
+      }},
+        React.createElement('div', { style: { fontSize: 48, marginBottom: 16 }}, "🎾"),
+        React.createElement('div', { style: { fontSize: 22, fontWeight: 900, color: "#e8f4f8", marginBottom: 8 }}, "Something went wrong"),
+        React.createElement('div', { style: { fontSize: 13, color: "#7fa8c0", marginBottom: 24, textAlign: "center", maxWidth: 420, lineHeight: 1.6 }},
+          "TennisTag encountered an error. Your match data is saved locally and will be available when you reload."),
+        React.createElement('div', { style: { fontSize: 11, color: "#e63946", marginBottom: 20, maxWidth: 500, wordBreak: "break-all", background: "#112233", padding: "10px 14px", borderRadius: 8, border: "1px solid #1e3a5f" }},
+          String(this.state.error)),
+        React.createElement('button', {
+          onClick: () => window.location.reload(),
+          style: { padding: "12px 32px", borderRadius: 10, fontWeight: 800, fontSize: 15,
+            cursor: "pointer", border: "2px solid #40c070", background: "#40c07020",
+            color: "#40c070", letterSpacing: 0.5 }
+        }, "↻ Reload App")
+      );
+    }
+    return this.props.children;
+  }
+}
+
 const root = ReactDOM.createRoot(document.getElementById("root"));
-root.render(React.createElement(App));
+root.render(React.createElement(ErrorBoundary, null, React.createElement(App)));
 
   </script>
   <script>window.addEventListener('load',function(){setTimeout(function(){var l=document.getElementById('loading');if(l)l.style.display='none';},600);});if(screen.orientation&&screen.orientation.lock){screen.orientation.lock('landscape').catch(function(){});}</script>
