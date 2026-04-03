@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="TennisTag Pro" />
   <title>TennisTag Pro</title>
-  <style>html,body{margin:0;padding:0;height:100%;overscroll-behavior:none;-webkit-overflow-scrolling:touch;background:#0d1b2a}#root{height:100%;min-height:100vh}*{-webkit-tap-highlight-color:transparent}#loading{position:fixed;inset:0;background:#0d1b2a;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif;z-index:99999}#loading .ball{font-size:56px;animation:spin 1.2s linear infinite}@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}#loading p{margin-top:16px;font-size:14px;color:#7fa8c0;letter-spacing:2px;text-transform:uppercase}</style>
+  <style>html,body{margin:0;padding:0;height:100%;overscroll-behavior:none;-webkit-overflow-scrolling:touch;background:#0d1b2a}#root{height:100%;min-height:100vh}*{-webkit-tap-highlight-color:transparent}#loading{position:fixed;inset:0;background:#0d1b2a;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif;z-index:99999}#loading .ball{font-size:56px;animation:spin 1.2s linear infinite}@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}#loading p{margin-top:16px;font-size:14px;color:#7fa8c0;letter-spacing:2px;text-transform:uppercase}@keyframes logflash{0%{opacity:1}100%{opacity:0}}</style>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 </head>
@@ -195,7 +195,7 @@ function ThemeSelector({ current, onSelect, compact = false }) {
             onMouseLeave: () => setHovered(null),
             style: {
               width: 28, height: 28, borderRadius: "50%",
-              border: "2px solid " + current === t.id ? t.primary : (hovered === t.id ? t.primary + "80" : "#2a3a4a"),
+              border: "2px solid " + (current === t.id ? t.primary : (hovered === t.id ? t.primary + "80" : "#2a3a4a")),
               background: current === t.id ? t.primary + "30" : (hovered === t.id ? "#1a2a3a" : "transparent"),
               cursor: "pointer", fontSize: 13, transition: "all 0.15s",
               display: "flex", alignItems: "center", justifyContent: "center",
@@ -227,7 +227,7 @@ function ThemeSelector({ current, onSelect, compact = false }) {
               style: {
                 padding: "10px 8px",
                 borderRadius: 10,
-                border: "2px solid " + isActive ? t.primary : (hovered === t.id ? t.primary + "60" : "#1e3a5f"),
+                border: "2px solid " + (isActive ? t.primary : (hovered === t.id ? t.primary + "60" : "#1e3a5f")),
                 background: isActive ? t.primary + "18" : (hovered === t.id ? "#1a2a3a" : "#0d1520"),
                 cursor: "pointer",
                 transition: "all 0.18s",
@@ -279,7 +279,7 @@ const s = {
   tagSection: { padding: "8px 12px", borderBottom: `1px solid #1e3a5f` },
   sectionLabel: { fontSize: 10, fontWeight: 700, letterSpacing: 2, color: MUTED, textTransform: "uppercase", marginBottom: 5 },
   chipRow: { display: "flex", flexWrap: "wrap", gap: 5 },
-  chip: (active, color = COURT_GREEN) => ({ padding: "6px 11px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer", border: "2px solid " + active ? color : "#1e3a5f", background: active ? color : "transparent", color: active ? WHITE : MUTED, transition: "all 0.15s", lineHeight: 1 }),
+  chip: (active, color = COURT_GREEN) => ({ padding: "6px 11px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer", border: "2px solid " + (active ? color : "#1e3a5f"), background: active ? color : "transparent", color: active ? WHITE : MUTED, transition: "all 0.15s", lineHeight: 1 }),
   btn: (color, disabled) => ({ flex: 1, padding: "12px 0", borderRadius: 10, fontWeight: 800, fontSize: 15, cursor: disabled ? "not-allowed" : "pointer", border: "none", background: disabled ? "#1e3a5f" : color, color: disabled ? MUTED : WHITE, letterSpacing: 0.5, transition: "all 0.15s", opacity: disabled ? 0.6 : 1 }),
   statCard: { background: CARD, borderRadius: 12, padding: "12px 16px", border: `1px solid #1e3a5f` },
   statTitle: { fontSize: 11, color: MUTED, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 6 },
@@ -322,6 +322,84 @@ function deriveServeSide(scorePoints) {
 }
 
 // ─── SCORE LOGIC ──────────────────────────────────────────────────────────────
+
+// ── AUTO PRESSURE POINT DETECTION ──────────────────────────────────────
+// Returns true if the current score state is a pressure point:
+//   Break point (returner can break), Set point, Match point, Deuce/Ad, 30-40
+function detectPressurePoint(score, format) {
+  if (!score || score.matchWinner) return false;
+  const { sets, games, points, server, superTieBreak, currentSet } = score;
+  const returner = server === "p1" ? "p2" : "p1";
+  const sp = points[server];   // server's point score
+  const rp = points[returner]; // returner's point score
+
+  // ── Super tie-break pressure ──
+  if (superTieBreak) {
+    const sn = Number(sp) || 0;
+    const rn = Number(rp) || 0;
+    // Match point for either side (>=9 and leading by 1+)
+    if ((sn >= 9 && sn > rn) || (rn >= 9 && rn > sn)) return true;
+    return false;
+  }
+
+  // ── Point-level pressure ──
+  // Deuce (40-40)
+  if (sp === "40" && rp === "40") return true;
+  // Ad situation (someone has AD)
+  if (sp === "AD" || rp === "AD") return true;
+  // 30-40 (server at 30, returner at 40 — break point)
+  if (sp === "30" && rp === "40") return true;
+  // 40-30 is not a break point but 30-40 from server's perspective is
+
+  // ── Break point: returner at 40 or AD while server is not at AD ──
+  const isBreakPoint = (rp === "40" && sp !== "40" && sp !== "AD") || (rp === "AD");
+
+  // ── Check for set point / match point ──
+  const gS = games[server];
+  const gR = games[returner];
+  const target = getSetTarget(format);
+  const needed = setsNeeded(format);
+
+  // Count sets won
+  const setsWon = (pid) => sets.filter((st, i) => i < currentSet && st[pid] > st[pid === "p1" ? "p2" : "p1"]).length;
+
+  // Is someone one game away from winning the set?
+  // Server holds and could win: server has target-1 games and is at 40/AD
+  // Returner breaks and could win: returner has target-1 games and has break point
+  const serverCanWinGame = sp === "40" || sp === "AD";
+  const returnerCanWinGame = isBreakPoint;
+
+  const checkSetPoint = (pid, canWin) => {
+    if (!canWin) return false;
+    const gP = games[pid];
+    const gO = games[pid === "p1" ? "p2" : "p1"];
+    // Standard set point: player has >=target-1 games and leads by 1+ or at target-1 each (tiebreak next or win)
+    if (gP >= target - 1 && gP >= gO && (gP - gO >= 1 || (gP === target - 1 && gO === target - 1))) {
+      // At target-1 each, it's not a set point unless tiebreak scenario (target+1 vs target possible)
+      if (gP === target - 1 && gO === target - 1) return false; // goes to tie territory
+      return true;
+    }
+    // Tiebreak-level: gP=target, gO=target-1 or gP=target, gO=target
+    if (gP >= target && gP - gO >= 1) return true;
+    return false;
+  };
+
+  const serverSetPoint = checkSetPoint(server, serverCanWinGame);
+  const returnerSetPoint = checkSetPoint(returner, returnerCanWinGame);
+
+  // Match point: set point AND winning this set wins the match
+  const checkMatchPoint = (pid, isSetPt) => {
+    if (!isSetPt) return false;
+    return setsWon(pid) >= needed - 1;
+  };
+
+  if (checkMatchPoint(server, serverSetPoint) || checkMatchPoint(returner, returnerSetPoint)) return true;
+  if (serverSetPoint || returnerSetPoint) return true;
+  if (isBreakPoint) return true;
+
+  return false;
+}
+
 function getSetTarget(format) {
   return (format === "Short Set (1st to 4)" || format === "Best of 3 Short Sets") ? 4 : 6;
 }
@@ -469,8 +547,10 @@ function calcStats(points) {
     netP1, netP2,
     p1winners: points.filter(p => p.pointWinner === "p1" && (p.outcome === "Winner" || p.outcome === "Ace")).length,
     p2winners: points.filter(p => p.pointWinner === "p2" && (p.outcome === "Winner" || p.outcome === "Ace")).length,
-    p1ue: points.filter(p => p.outcome === "Unforced Error" && p.server !== "p1").length,
-    p2ue: points.filter(p => p.outcome === "Unforced Error" && p.server !== "p2").length,
+    p1ue: points.filter(p => p.outcome === "Unforced Error" && p.pointWinner !== "p1").length,
+    p2ue: points.filter(p => p.outcome === "Unforced Error" && p.pointWinner !== "p2").length,
+    p1fe: points.filter(p => p.outcome === "Forced Error" && p.pointWinner !== "p1").length,
+    p2fe: points.filter(p => p.outcome === "Forced Error" && p.pointWinner !== "p2").length,
     p1bp: { opp: bpFor("p1").length, won: bpWon("p1").length, faced: bpFaced("p1").length, saved: bpSaved("p1").length },
     p2bp: { opp: bpFor("p2").length, won: bpWon("p2").length, faced: bpFaced("p2").length, saved: bpSaved("p2").length },
     p1returnZones: retZoneCount("p1"),
@@ -542,7 +622,7 @@ function Toggle({ label, sub, value, onChange, activeColor = COURT_GREEN }) {
       , React.createElement('button', { onClick: () => onChange(!value), style: {
         width: 52, height: 28, borderRadius: 14, flexShrink: 0, cursor: "pointer",
         background: value ? activeColor : "#1e3a5f",
-        border: "2px solid " + value ? activeColor : "#1e3a5f",
+        border: "2px solid " + (value ? activeColor : "#1e3a5f"),
         position: "relative", transition: "all 0.2s",
       },}
         , React.createElement('div', { style: { width: 20, height: 20, borderRadius: "50%", background: value ? WHITE : MUTED, position: "absolute", top: 2, left: value ? 26 : 2, transition: "left 0.2s" },} )
@@ -589,10 +669,21 @@ function CourtZonePicker({ side, value, onChange, serverName, returnerName, flip
   const retLY     = flipped ? 258 : 18;
   const sName = serverName  || "Server";
   const rName = returnerName || "Returner";
+
+  // ── HORIZONTAL FLIP LOGIC ──
+  // NOT flipped (analyst behind server, server at bottom):
+  //   Deuce: server RIGHT of centre (x=215), serve lands in Ad box (LEFT)
+  //   Ad:    server LEFT of centre  (x=125), serve lands in Deuce box (RIGHT)
+  // FLIPPED (analyst behind returner, server at top — 180° rotation):
+  //   From analyst's perspective, left/right are MIRRORED:
+  //   Deuce: server now appears LEFT (x=125), serve lands in RIGHT box
+  //   Ad:    server now appears RIGHT (x=215), serve lands in LEFT box
+  const serverX = flipped
+    ? (isDeuce ? 125 : 215)   // flipped: Deuce→LEFT, Ad→RIGHT
+    : (isDeuce ? 215 : 125);  // normal:  Deuce→RIGHT, Ad→LEFT
+
+  // Box label from the serve perspective (where the ball lands)
   const boxLabel = isDeuce ? "Ad box" : "Deuce box";
-  // Deuce = server always RIGHT of centre (x=215), Ad = LEFT (x=125)
-  // Flip changes which END they stand at (top/bottom), NOT which side (left/right)
-  const serverX   = isDeuce ? 215 : 125;
 
   // Zone coords — always in the OPPONENT half (far side from server)
   // When NOT flipped: server bottom → zones at top (y 12-133)
@@ -620,17 +711,23 @@ function CourtZonePicker({ side, value, onChange, serverName, returnerName, flip
     { id:"Body-Short", lbl:"Body", sub:"Short", x:202, y:my, w:31, h:mh },
     { id:"Wide-Short", lbl:"Wide", sub:"Short", x:235, y:my, w:32, h:mh },
   ];
-  // Deuce serve always lands in Ad box (LEFT half of opponent's court)
-  // Ad serve always lands in Deuce box (RIGHT half)
-  // Flip only changes top/bottom — left/right stays the same
-  const activeZones = isDeuce ? zonesLeft : zonesRight;
-  const dimZones    = isDeuce ? zonesRight : zonesLeft;
+  // Horizontal flip: when flipped, the active/dim sides SWAP
+  // NOT flipped: Deuce serve → lands in LEFT (Ad box), Ad serve → lands in RIGHT (Deuce box)
+  // FLIPPED:     Deuce serve → lands in RIGHT (from analyst view), Ad → lands in LEFT
+  const activeZones = flipped
+    ? (isDeuce ? zonesRight : zonesLeft)
+    : (isDeuce ? zonesLeft  : zonesRight);
+  const dimZones = flipped
+    ? (isDeuce ? zonesLeft  : zonesRight)
+    : (isDeuce ? zonesRight : zonesLeft);
 
   // Net and service line positions
   const netY   = 133;
   const netTop = flipped ? 192 : 129;   // net bar top
   const activeLabelY = flipped ? (my + mh + 10) : (zy - 5);
-  const activeLabelX = isDeuce ? 121 : 219;
+  const activeLabelX = flipped
+    ? (isDeuce ? 219 : 121)   // flipped: Deuce active is RIGHT, Ad active is LEFT
+    : (isDeuce ? 121 : 219);  // normal:  Deuce active is LEFT, Ad active is RIGHT
 
   return (
     React.createElement('div', { style: { marginTop: 6 },}
@@ -695,7 +792,13 @@ function CourtZonePicker({ side, value, onChange, serverName, returnerName, flip
               fill: "rgba(255,255,255,0.03)", stroke: "rgba(255,255,255,0.08)", strokeWidth: "1",})
           ))
           /* ── FLIP BUTTON on court ── top-right corner */
-          
+          , React.createElement('g', { onClick: onFlip, style: { cursor: "pointer" },}
+            , React.createElement('rect', { x: "278", y: "4", width: "56", height: "22", rx: "4",
+              fill: flipped ? "rgba(244,211,94,0.35)" : "rgba(255,255,255,0.15)",
+              stroke: flipped ? "#f4d35e" : "rgba(255,255,255,0.5)", strokeWidth: "1.5",})
+            , React.createElement('text', { x: "306", y: "18", textAnchor: "middle", fontSize: "8",
+              fill: flipped ? "#f4d35e" : "rgba(255,255,255,0.85)", fontWeight: "700", letterSpacing: "0.5",}, flipped ? "⟲ FLIP" : "⟳ FLIP")
+          )
         )
       )
       , value && (
@@ -709,59 +812,59 @@ function CourtZonePicker({ side, value, onChange, serverName, returnerName, flip
 
 // ─── RETURN LANDING PICKER — zones on server's side, flip button on diagram ───
 function ReturnLandPicker({ value, onChange, serveSide, serverName, returnerName, flipped, onFlip }) {
-  // CONFIRMED from photo:
-  // Max (returner, purple) = FAR end, opposite side from John
-  // John (server, yellow)  = NEAR end, same side as serve court
-  // Return zones = NEAR end BOTTOM half (between net and John's baseline)
-  // Into Net = on the net
+  // Return lands in the SERVER's half of the court
+  // Zones: Down-line, Centre, Cross (from returner's perspective)
   //
-  // Deuce: John near-RIGHT(x=215), Max far-LEFT(x=125)
-  // Ad:    John near-LEFT(x=125),  Max far-RIGHT(x=215)
+  // NOT flipped (analyst behind server at bottom):
+  //   Deuce: server RIGHT(x=215), returner LEFT(x=125)
+  //   Down-line = LEFT col (ball stays on returner's side), Cross = RIGHT col
+  //
+  // FLIPPED (analyst behind returner, server at top — 180° rotation):
+  //   The analyst now sees the court rotated, so left/right swap
+  //   Down-line and Cross columns need to swap horizontally
+  //   BUT: the server/returner DOTS stay fixed (no horizontal flip for dots)
   const isDeuceSide = (serveSide || "Deuce") === "Deuce";
 
-  // When NOT flipped: John bottom-RIGHT(Deuce), Max top-LEFT(Deuce)
-  // When FLIPPED:     John top-LEFT(Deuce — mirrored), Max bottom-RIGHT(Deuce)
-  const serverX     = (isDeuceSide !== flipped) ? 215 : 125;
-  const returnerX   = (isDeuceSide !== flipped) ? 125 : 215;
-  const serverDotY  = flipped ? 28  : 243;   // server near baseline — top when flipped
-  const returnerDotY = 28;   // far end baseline (top)
+  // Player dot X positions
+  // NOT flipped: Deuce → server RIGHT(215), returner LEFT(125)
+  // FLIPPED: 180° rotation → server swaps to LEFT→RIGHT, returner swaps to RIGHT→LEFT
+  const serverX     = flipped
+    ? (isDeuceSide ? 125 : 215)   // flipped: mirror X
+    : (isDeuceSide ? 215 : 125);  // normal
+  const returnerX   = flipped
+    ? (isDeuceSide ? 215 : 125)   // flipped: mirror X
+    : (isDeuceSide ? 125 : 215);  // normal
+  const serverDotY    = flipped ? 28  : 243;
+  const returnerDotY  = flipped ? 243 : 28;
 
   const sName = serverName   || "Server";
   const rName = returnerName || "Returner";
-  const serverLabelY   = 260;  // near end
-  const returnerLabelY = 16;   // far end
+  const serverLabelY   = flipped ? 18  : 260;
+  const returnerLabelY = flipped ? 260 : 16;
 
-  // Return zones BOTTOM half (near end — John's half, where return lands)
-  // flipped=false: zones in bottom half
-  // flipped=true:  zones in top half (court orientation flipped)
-  // Net is at y=133
-  // NOT flipped: John at BOTTOM → return lands in server's half = BOTTOM
-  //   mid row (just below net): y=136-176
-  //   deep row (near baseline): y=178-235
-  // FLIPPED: John at TOP → return lands in server's half = TOP
-  //   mid row (just above net): y=92-130
-  //   deep row (near top baseline): y=12-90
+  // Zone Y positions (vertical flip: which half of court)
   const my = flipped ? 92  : 136;
-  const mh = flipped ? 38  : 40;
-  const zy = flipped ? 12  : 178;
-  const zh = flipped ? 78  : 55;
+  const mh = flipped ? 38  : 42;
+  const zy = flipped ? 12  : 180;
+  const zh = flipped ? 78  : 88;
 
-  // Into Net zone — always on the net (y=129-152 area)
-  // When flipped, net is still at same position
+  // Column labels: from RETURNER's perspective
+  // NOT flipped — Deuce: returner on LEFT → Down-line=LEFT(col1), Cross=RIGHT(col3)
+  // FLIPPED     — Deuce: returner view is rotated 180° → Down-line=RIGHT, Cross=LEFT
+  const col1Label = isDeuceSide ? "Down-line" : "Cross";
+  const col3Label = isDeuceSide ? "Cross"     : "Down-line";
 
-  // Max always at opposite side from server
-  // Deuce: Max on LEFT → down-line=LEFT(col1), cross=RIGHT(col3)
-  // Ad:    Max on RIGHT → down-line=RIGHT(col3), cross=LEFT(col1)
-  const col1 = isDeuceSide ? "Down-line" : "Cross";
-  const col3 = isDeuceSide ? "Cross"     : "Down-line";
+  // When flipped, swap the column positions (horizontal mirror)
+  const leftCol  = flipped ? col3Label : col1Label;
+  const rightCol = flipped ? col1Label : col3Label;
 
   const zones = [
-    { id: col1+"-Deep",  lbl: col1,     sub: "Deep", x: 73,  y: zy, w: 62, h: zh },
-    { id: "Centre-Deep", lbl: "Centre", sub: "Deep", x: 137, y: zy, w: 66, h: zh },
-    { id: col3+"-Deep",  lbl: col3,     sub: "Deep", x: 205, y: zy, w: 62, h: zh },
-    { id: col1+"-Mid",   lbl: col1,     sub: "Mid",  x: 73,  y: my, w: 62, h: mh },
-    { id: "Centre-Mid",  lbl: "Centre", sub: "Mid",  x: 137, y: my, w: 66, h: mh },
-    { id: col3+"-Mid",   lbl: col3,     sub: "Mid",  x: 205, y: my, w: 62, h: mh },
+    { id: leftCol+"-Deep",   lbl: leftCol,   sub: "Deep", x: 73,  y: zy, w: 62, h: zh },
+    { id: "Centre-Deep",     lbl: "Centre",  sub: "Deep", x: 137, y: zy, w: 66, h: zh },
+    { id: rightCol+"-Deep",  lbl: rightCol,  sub: "Deep", x: 205, y: zy, w: 62, h: zh },
+    { id: leftCol+"-Mid",    lbl: leftCol,   sub: "Mid",  x: 73,  y: my, w: 62, h: mh },
+    { id: "Centre-Mid",      lbl: "Centre",  sub: "Mid",  x: 137, y: my, w: 66, h: mh },
+    { id: rightCol+"-Mid",   lbl: rightCol,  sub: "Mid",  x: 205, y: my, w: 62, h: mh },
   ];
 
   return (
@@ -811,7 +914,13 @@ function ReturnLandPicker({ value, onChange, serveSide, serverName, returnerName
             );
           })
           /* Flip button — top-right corner */
-          
+          , React.createElement('g', { onClick: onFlip, style: { cursor: "pointer" },}
+            , React.createElement('rect', { x: "278", y: "4", width: "56", height: "22", rx: "4",
+              fill: flipped ? "rgba(176,96,232,0.35)" : "rgba(255,255,255,0.15)",
+              stroke: flipped ? P2C : "rgba(255,255,255,0.5)", strokeWidth: "1.5",})
+            , React.createElement('text', { x: "306", y: "18", textAnchor: "middle", fontSize: "8",
+              fill: flipped ? P2C : "rgba(255,255,255,0.85)", fontWeight: "700", letterSpacing: "0.5",}, flipped ? "⟲ FLIP" : "⟳ FLIP")
+          )
         )
       )
       , value && (
@@ -1084,6 +1193,7 @@ function exportPDF(points, setup, score, matchTime, conditions) {
     html += statRow("Unforced Errors", stats.p1ue, stats.p2ue);
     html += statRow("Aces", stats.p1serve.aces, stats.p2serve.aces);
     html += statRow("Double Faults", stats.p1serve.dfs, stats.p2serve.dfs);
+    html += statRow("1st Serve In %", pct(stats.p1serve.firstIn, stats.p1serve.total) + "%", pct(stats.p2serve.firstIn, stats.p2serve.total) + "%");
     html += statRow("1st Serve Won %", pct(stats.p1serve.firstWon, stats.p1serve.firstIn), pct(stats.p2serve.firstWon, stats.p2serve.firstIn));
     html += statRow("2nd Serve Won %", pct(stats.p1serve.secondWon, stats.p1serve.secondIn), pct(stats.p2serve.secondWon, stats.p2serve.secondIn));
     html += statRow("Net Approaches", stats.netP1.length, stats.netP2.length);
@@ -1322,7 +1432,7 @@ function ShotPicker({ value, onChange, accentColor = "#1a5276", label }) {
                     fontSize: 12,
                     fontWeight: active ? 700 : 500,
                     cursor: "pointer",
-                    border: "2px solid " + active ? color : "#1e3a5f",
+                    border: "2px solid " + (active ? color : "#1e3a5f"),
                     background: active ? color : "transparent",
                     color: active ? WHITE : MUTED,
                     transition: "all 0.15s",
@@ -1425,7 +1535,7 @@ function ScoreOverwriteModal({ setup, score, onApply, onClose, T = THEMES.origin
     React.createElement('button', { key: val, onClick: () => onSet(val), style: {
       padding: "8px 0", minWidth: 38, borderRadius: T.chipRadius || 6, fontWeight: 700, fontSize: 14,
       cursor: "pointer", transition: "all 0.15s",
-      border: "2px solid " + current === val ? color : T.border,
+      border: "2px solid " + (current === val ? color : T.border),
       background: current === val ? color + "30" : "transparent",
       color: current === val ? color : T.textMuted,
       fontFamily: T.fontBody,
@@ -1549,7 +1659,7 @@ function ScoreOverwriteModal({ setup, score, onApply, onClose, T = THEMES.origin
               React.createElement('button', { key: pid, onClick: () => setV("server", pid), style: {
                 flex: 1, padding: "10px 0", borderRadius: T.chipRadius || 8, fontWeight: 700, fontSize: 14,
                 cursor: "pointer", fontFamily: T.fontDisplay,
-                border: "2px solid " + ow.server === pid ? T.accent : T.border,
+                border: "2px solid " + (ow.server === pid ? T.accent : T.border),
                 background: ow.server === pid ? T.accent + "25" : "transparent",
                 color: ow.server === pid ? T.accent : T.textMuted,
               },}
@@ -1631,14 +1741,26 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES
   return (
     React.createElement('div', { style: { display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" },}
 
-      /* Server display */
+      /* Server display + Court flip indicator */
       , React.createElement('div', { style: { padding: "6px 12px", background: T.bgDeep, borderBottom: "1px solid " + T.border, flexShrink: 0, backgroundImage: T.pattern, backgroundSize: T.patternBg },}
-        , React.createElement('div', { style: { fontSize: 9, fontWeight: 700, letterSpacing: 2, color: T.textMuted, textTransform: "uppercase", marginBottom: 5, fontFamily: T.fontBody },}, "Serving")
+        , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 },}
+          , React.createElement('div', { style: { fontSize: 9, fontWeight: 700, letterSpacing: 2, color: T.textMuted, textTransform: "uppercase", fontFamily: T.fontBody },}, "Serving")
+          , React.createElement('button', { onClick: onFlipCourt, style: {
+            padding: "3px 10px", borderRadius: T.chipRadius || 6, fontSize: 10, fontWeight: 700,
+            cursor: "pointer", transition: "all 0.15s", letterSpacing: 0.5,
+            border: "1.5px solid " + (courtFlipped ? ACCENT : T.border),
+            background: courtFlipped ? ACCENT + "20" : "transparent",
+            color: courtFlipped ? ACCENT : T.textMuted,
+            fontFamily: T.fontBody,
+          },}
+            , courtFlipped ? "⟲ Far End" : "⟳ Near End"
+          )
+        )
         , React.createElement('div', { style: { display: "flex", gap: 6 },}
           , [{ pid: "p1", name: player1 }, { pid: "p2", name: player2 }].map(({ pid, name }) => (
             React.createElement('div', { key: pid, style: {
               padding: "6px 11px", borderRadius: T.chipRadius, fontSize: 13, fontWeight: 700,
-              border: "2px solid " + server === pid ? (pid === "p1" ? P1C : P2C) : T.border,
+              border: "2px solid " + (server === pid ? (pid === "p1" ? P1C : P2C) : T.border),
               background: server === pid ? (pid === "p1" ? P1BG : P2BG) : "transparent",
               color: server === pid ? (pid === "p1" ? P1C : P2C) : T.textMuted,
               flex: 1, textAlign: "center", fontFamily: T.fontDisplay,
@@ -1685,7 +1807,7 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES
           React.createElement('div', { style: { marginTop: 8 },}
             , React.createElement('button', {
               onClick: () => setTag(p => ({ ...p, serveFault: p.serveFault ? null : "?", pointWinner: p.serveFault ? p.pointWinner : null, outcome: p.serveFault ? p.outcome : null })),
-              style: { width: "100%", padding: "8px 0", borderRadius: 8, fontWeight: 800, fontSize: 12, cursor: "pointer", border: "2px solid " + inFaultMode ? DANGER : "#3a1a1a", background: inFaultMode ? DANGER + "22" : "transparent", color: inFaultMode ? DANGER : "#c06060", transition: "all 0.15s" },}
+              style: { width: "100%", padding: "8px 0", borderRadius: 8, fontWeight: 800, fontSize: 12, cursor: "pointer", border: "2px solid " + (inFaultMode ? DANGER : "#3a1a1a"), background: inFaultMode ? DANGER + "22" : "transparent", color: inFaultMode ? DANGER : "#c06060", transition: "all 0.15s" },}
               , inFaultMode ? "⚡ FAULT — choose type ↓" : "⚡ Mark as 1st Serve Fault"
             )
             , inFaultMode && (
@@ -1693,7 +1815,7 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES
                 , React.createElement('div', { style: { fontSize: 9, color: DANGER, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase", marginBottom: 4 },}, "Fault Type" )
                 , React.createElement('div', { style: s.chipRow,}
                   , SERVE_FAULT_TYPES.map(ft => (
-                    React.createElement('button', { key: ft, style: { padding: "6px 10px", borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer", border: "2px solid " + tag.serveFault === ft ? DANGER : "#3a1a1a", background: tag.serveFault === ft ? DANGER : "transparent", color: tag.serveFault === ft ? WHITE : "#c06060" },
+                    React.createElement('button', { key: ft, style: { padding: "6px 10px", borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer", border: "2px solid " + (tag.serveFault === ft ? DANGER : "#3a1a1a"), background: tag.serveFault === ft ? DANGER : "transparent", color: tag.serveFault === ft ? WHITE : "#c06060" },
                       onClick: () => setT("serveFault", ft),}, ft)
                   ))
                 )
@@ -1862,7 +1984,14 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES
       /* Net + Pressure toggles */
       , React.createElement(Toggle, { label: "Net Approach" , value: tag.netApproach, onChange: v => setT("netApproach", v),} )
       , !inFaultMode && (
-        React.createElement(Toggle, { label: "🔴 Pressure Point"  , sub: "Break pt · Set pt · Match pt · Deuce · 30-40"           , value: tag.pressurePoint, onChange: v => setT("pressurePoint", v), activeColor: "#c0392b",} )
+        React.createElement('div', null
+          , React.createElement(Toggle, { label: "🔴 Pressure Point"  , sub: "Auto-detected from score · tap to override"       , value: tag.pressurePoint || detectPressurePoint(score, setup.format), onChange: v => setT("pressurePoint", v), activeColor: "#c0392b",} )
+          , detectPressurePoint(score, setup.format) && !tag.pressurePoint && (
+            React.createElement('div', { style: { padding: "3px 12px 6px", fontSize: 10, color: "#c0392b", fontWeight: 600 },}
+              , "⚡ Auto-detected: pressure point"
+            )
+          )
+        )
       )
 
       /* ⑥ RALLY LENGTH — auto-locked for aces/double faults/return errors */
@@ -1893,7 +2022,7 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES
               React.createElement('button', { key: pid, style: {
                 flex: 1, padding: "10px 0", textAlign: "center", fontSize: 14, fontWeight: 800,
                 cursor: "pointer", transition: "all 0.15s", borderRadius: T.chipRadius || 8,
-                border: "2px solid " + tag.pointWinner === pid ? (pid === "p1" ? P1C : P2C) : T.border,
+                border: "2px solid " + (tag.pointWinner === pid ? (pid === "p1" ? P1C : P2C) : T.border),
                 background: tag.pointWinner === pid ? (pid === "p1" ? P1BG : P2BG) : "transparent",
                 color: tag.pointWinner === pid ? (pid === "p1" ? P1C : P2C) : T.textMuted,
                 fontFamily: T.fontDisplay,
@@ -1927,7 +2056,7 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, points, T = THEMES
 
           )
         ) : (
-          React.createElement('button', { style: { flex: 2, padding: "12px 0", borderRadius: T.btnRadius, fontWeight: 800, fontSize: 15, cursor: !required ? "not-allowed" : "pointer", border: "2px solid " + required ? T.accent : T.border, background: required ? T.accent + "25" : "transparent", color: required ? T.accent : T.textMuted, opacity: !required ? 0.5 : 1, transition: "all 0.15s", fontFamily: T.fontDisplay, letterSpacing: 1 }, onClick: onLog, disabled: !required,}, "✓ Log Point ("
+          React.createElement('button', { style: { flex: 2, padding: "12px 0", borderRadius: T.btnRadius, fontWeight: 800, fontSize: 15, cursor: !required ? "not-allowed" : "pointer", border: "2px solid " + (required ? T.accent : T.border), background: required ? T.accent + "25" : "transparent", color: required ? T.accent : T.textMuted, opacity: !required ? 0.5 : 1, transition: "all 0.15s", fontFamily: T.fontDisplay, letterSpacing: 1 }, onClick: onLog, disabled: !required,}, "✓ Log Point ("
                , points.length + 1, ")"
           )
         )
@@ -2024,6 +2153,8 @@ function StatsScreen({ points, setup, score, matchTime }) {
               , React.createElement(BarStat, { label: "Points Won" , p1: stats.p1pts, p2: stats.p2pts,} )
               , React.createElement(BarStat, { label: "Winners", p1: stats.p1winners, p2: stats.p2winners,} )
               , React.createElement(BarStat, { label: "Unforced Errors" , p1: stats.p1ue, p2: stats.p2ue,} )
+              , React.createElement(BarStat, { label: "Forced Errors" , p1: stats.p1fe, p2: stats.p2fe,} )
+              , React.createElement(BarStat, { label: "1st Serve In %"   , p1: pct(stats.p1serve.firstIn, stats.p1serve.total), p2: pct(stats.p2serve.firstIn, stats.p2serve.total),} )
               , React.createElement(BarStat, { label: "1st Serve Win %"   , p1: pct(stats.p1serve.firstWon, stats.p1serve.firstIn), p2: pct(stats.p2serve.firstWon, stats.p2serve.firstIn),} )
               , React.createElement(BarStat, { label: "2nd Serve Win %"   , p1: pct(stats.p1serve.secondWon, stats.p1serve.secondIn), p2: pct(stats.p2serve.secondWon, stats.p2serve.secondIn),} )
               , React.createElement(BarStat, { label: "Net Approaches" , p1: stats.netP1.length, p2: stats.netP2.length,} )
@@ -2044,6 +2175,7 @@ function StatsScreen({ points, setup, score, matchTime }) {
               , React.createElement('div', { style: { fontWeight: 800, fontSize: 13, color: P2C },}, player2)
             )
             , React.createElement('div', { style: { ...s.statCard, marginBottom: 10 },}
+              , React.createElement(BarStat, { label: "1st Serve In %"   , p1: pct(stats.p1serve.firstIn, stats.p1serve.total), p2: pct(stats.p2serve.firstIn, stats.p2serve.total),} )
               , React.createElement(BarStat, { label: "1st Serve Won %"   , p1: pct(stats.p1serve.firstWon, stats.p1serve.firstIn), p2: pct(stats.p2serve.firstWon, stats.p2serve.firstIn),} )
               , React.createElement(BarStat, { label: "2nd Serve Won %"   , p1: pct(stats.p1serve.secondWon, stats.p1serve.secondIn), p2: pct(stats.p2serve.secondWon, stats.p2serve.secondIn),} )
               , React.createElement(BarStat, { label: "Aces", p1: stats.p1serve.aces, p2: stats.p2serve.aces,} )
@@ -2181,7 +2313,8 @@ function App() {
   const [themeId, setThemeId] = useState("original");
   const T = THEMES[themeId] || THEMES.original;
   const [showOverwrite, setShowOverwrite] = useState(false);
-  const courtFlipped = false; const setCourtFlipped = () => {};
+  const [logFlash, setLogFlash] = useState(false);
+  const [courtFlipped, setCourtFlipped] = useState(false);
   const handleFlipCourt = () => {
     setCourtFlipped(f => !f);
   };
@@ -2261,6 +2394,8 @@ function App() {
       : tag.pointWinner;
     const autoR = isAutoOutcome ? "0-4" : tag.rallyLength;
     if (!autoW) return; // still need a point winner
+    // ── Auto-detect pressure point from current score ──
+    const autoPressure = detectPressurePoint(score, setup.format);
     const newPoint = {
       ...tag,
       id: Date.now(),
@@ -2268,6 +2403,7 @@ function App() {
       serveSide: deriveServeSide(score.points),
       pointWinner: autoW,
       rallyLength: autoR,
+      pressurePoint: tag.pressurePoint || autoPressure,
     };
     const newPoints = [...points, newPoint];
     setPoints(newPoints);
@@ -2282,6 +2418,10 @@ function App() {
       }
     }
     setTag({ ...EMPTY_TAG, serveType: tag.serveType === "1st Serve" ? "1st Serve" : null });
+    // Haptic feedback (iPad) + visual flash
+    if (navigator.vibrate) navigator.vibrate(50);
+    setLogFlash(true);
+    setTimeout(() => setLogFlash(false), 400);
   };
 
   const handleSuperTieDecision = (useSuperTie) => {
@@ -2330,7 +2470,7 @@ function App() {
   const tCard = { background: T.card, border: "1px solid " + T.border };
   const tChip = (active, color) => ({
     padding: "6px 11px", borderRadius: T.chipRadius, fontSize: 13, fontWeight: active ? 700 : 500,
-    cursor: "pointer", border: "2px solid " + active ? (color||T.accent) : T.border,
+    cursor: "pointer", border: "2px solid " + (active ? (color||T.accent) : T.border),
     background: active ? (color||T.accent) + "30" : "transparent",
     color: active ? (color||T.accent) : T.textMuted, transition: "all 0.15s", lineHeight: 1,
     fontFamily: T.fontBody,
@@ -2384,6 +2524,13 @@ function App() {
       )
 
       , score && React.createElement(ScoreBanner, { setup: setup, score: score, matchTime: matchTime, T: T,} )
+
+      /* Point logged flash */
+      , logFlash && React.createElement('div', { style: {
+        position: "fixed", inset: 0, background: "rgba(64,192,112,0.12)",
+        zIndex: 9998, pointerEvents: "none",
+        animation: "logflash 0.4s ease-out forwards",
+      },} )
 
       /* Super Tie-Break modal — auto-appears at 1-1 */
       , showSuperTieModal && React.createElement(SuperTieModal, { setup: setup, onDecide: handleSuperTieDecision,} )
