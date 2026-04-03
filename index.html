@@ -695,11 +695,7 @@ function CourtZonePicker({ side, value, onChange, serverName, returnerName, flip
               fill: "rgba(255,255,255,0.03)", stroke: "rgba(255,255,255,0.08)", strokeWidth: "1",})
           ))
           /* ── FLIP BUTTON on court ── top-right corner */
-          , React.createElement('g', { onClick: onFlip, style: { cursor: "pointer" },}
-            , React.createElement('rect', { x: "278", y: "12", width: "38", height: "18", rx: "3", fill: "#1a3a6e", stroke: "#4a9eff", strokeWidth: "1.5",
-              opacity: "0.9",})
-            , React.createElement('text', { x: "297", y: "24", textAnchor: "middle", fontSize: "9", fill: "#4a9eff", fontWeight: "600",}, "⇅ flip")
-          )
+          
         )
       )
       , value && (
@@ -815,12 +811,7 @@ function ReturnLandPicker({ value, onChange, serveSide, serverName, returnerName
             );
           })
           /* Flip button — top-right corner */
-          , onFlip && (
-            React.createElement('g', { onClick: onFlip, style: { cursor: "pointer" },}
-              , React.createElement('rect', { x: "278", y: "12", width: "38", height: "18", rx: "3", fill: "#1a3a6e", stroke: "#4a9eff", strokeWidth: "1.5", opacity: "0.9",})
-              , React.createElement('text', { x: "297", y: "24", textAnchor: "middle", fontSize: "9", fill: "#4a9eff", fontWeight: "600",}, "⇅ flip")
-            )
-          )
+          
         )
       )
       , value && (
