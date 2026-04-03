@@ -900,9 +900,9 @@ function exportCSV(points, setup) {
       isP1Winner ? setup.player1 : setup.player2,
       isP1Winner ? (setup.p1utr || "") : (setup.p2utr || ""),
       isP1Winner ? (setup.p1hand || "") : (setup.p2hand || ""),
-    ].join(",");
+    ].map(v => { const s = String(v); return s.includes(",") || s.includes('"') || s.includes("\n") ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(",");
   });
-  const csv = [hdrs.join(","), ...rows].join("\n");
+  const csv = [hdrs.map(h => '"' + h + '"').join(","), ...rows].join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -1043,7 +1043,7 @@ function CourtZonePicker({ side, value, onChange, serverName, returnerName, flip
         )
       )
       , React.createElement('div', { style: { background: "#236b36", borderRadius: 6, padding: 5, border: "2px solid #145228" },}
-        , React.createElement('svg', { width: "100%", viewBox: "0 0 340 280"   , style: { display: "block", maxHeight: 200 },}
+        , React.createElement('svg', { width: "100%", viewBox: "0 0 340 280"   , style: { display: "block", maxHeight: 260 },}
           , React.createElement('rect', { width: "340", height: "280", fill: "#236b36",})
           /* Court outer boundary */
           , React.createElement('rect', { x: "30", y: "10", width: "280", height: "260", fill: "none", stroke: "rgba(255,255,255,0.7)", strokeWidth: "1.5",})
@@ -1169,7 +1169,7 @@ function ReturnLandPicker({ value, onChange, serveSide, serverName, returnerName
   return (
     React.createElement('div', { style: { marginTop: 5 },}
       , React.createElement('div', { style: { background: "#236b36", borderRadius: 6, padding: 5, border: "2px solid #145228" },}
-        , React.createElement('svg', { width: "100%", viewBox: "0 0 340 280"   , style: { display: "block", maxHeight: 200 },}
+        , React.createElement('svg', { width: "100%", viewBox: "0 0 340 280"   , style: { display: "block", maxHeight: 260 },}
           , React.createElement('rect', { width: "340", height: "280", fill: "#236b36",})
           /* Court */
           , React.createElement('rect', { x: "30", y: "10", width: "280", height: "260", fill: "none", stroke: "rgba(255,255,255,0.7)", strokeWidth: "1.5",})
@@ -1552,6 +1552,7 @@ function SetupScreen({ onStart, themeId, onThemeChange, T }) {
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
   const valid = form.player1.trim() && form.player2.trim();
   const canSuperTie = ["Best of 3","Best of 3 Short Sets"].includes(form.format);
+  const [showThemes, setShowThemes] = useState(false);
 
   return (
     React.createElement('div', { style: { flex: 1, overflowY: "auto", padding: 20, background: BG },}
@@ -1563,12 +1564,22 @@ function SetupScreen({ onStart, themeId, onThemeChange, T }) {
       , React.createElement('div', { style: { maxWidth: 580, margin: "0 auto", background: CARD, borderRadius: 16, padding: 26, border: `1px solid #1e3a5f` },}
         , React.createElement('div', { style: { fontSize: 15, fontWeight: 800, color: (T && T.primary2) || WHITE, marginBottom: 10, fontFamily: (T && T.fontDisplay) || "inherit" },}, "New Match Setup"  )
 
-        /* Theme selector */
+        /* Theme selector — collapsible */
         , React.createElement('div', { style: { marginBottom: 16 },}
-          , React.createElement('label', { style: { fontSize: 11, color: MUTED, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", marginBottom: 6, display: "block" },}, "App Theme"
-
+          , React.createElement('button', { onClick: () => setShowThemes(!showThemes), style: {
+            width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center",
+            padding: "8px 12px", borderRadius: 8, cursor: "pointer",
+            border: "1px solid #1e3a5f", background: "#0d1520",
+            color: MUTED, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
+          },}
+            , React.createElement('span', null, "🎨 App Theme: " , THEMES[themeId] ? THEMES[themeId].name : "Original")
+            , React.createElement('span', { style: { fontSize: 14, transition: "transform 0.2s", transform: showThemes ? "rotate(180deg)" : "rotate(0)" },}, "▾")
           )
-          , React.createElement(ThemeSelector, { current: themeId, onSelect: onThemeChange,} )
+          , showThemes && (
+            React.createElement('div', { style: { marginTop: 8 },}
+              , React.createElement(ThemeSelector, { current: themeId, onSelect: onThemeChange,} )
+            )
+          )
         )
 
         /* Player 1 */
@@ -1684,20 +1695,38 @@ function PlayerRow({ pid, name, setup, score, T }) {
   ]);
   return React.createElement.apply(React, ['div', { style: { display: "flex", alignItems: "center", padding: "5px 14px", gap: 8 }}].concat(rowChildren));
 }
-function ScoreBanner({ setup, score, matchTime, T = THEMES.original }) {
+function ScoreBanner({ setup, score, matchTime, onPauseToggle, T = THEMES.original }) {
   const { superTieBreak } = score;
   const [elapsed, setElapsed] = useState(0);
+  const isPaused = !!matchTime.pausedAt;
   useEffect(function() {
     if (!matchTime.start || matchTime.end) return;
-    var id = setInterval(function() { setElapsed(Date.now() - matchTime.start); }, 1000);
+    if (isPaused) return; // don't tick while paused
+    var id = setInterval(function() {
+      setElapsed(Date.now() - matchTime.start - (matchTime.pausedMs || 0));
+    }, 1000);
     return function() { clearInterval(id); };
-  }, [matchTime.start, matchTime.end]);
+  }, [matchTime.start, matchTime.end, isPaused, matchTime.pausedMs]);
+  const displayDuration = matchTime.end
+    ? matchTime.end - matchTime.start - (matchTime.pausedMs || 0)
+    : elapsed;
   return (
     React.createElement('div', { style: { background: T.scoreBg, borderBottom: "2px solid " + T.headerBorder, flexShrink: 0, fontFamily: T.fontBody },}
       , React.createElement(PlayerRow, { pid: "p1", name: setup.player1, setup: setup, score: score, T: T,} )
       , React.createElement(PlayerRow, { pid: "p2", name: setup.player2, setup: setup, score: score, T: T,} )
       , React.createElement('div', { style: { padding: "2px 14px 4px", display: "flex", gap: 12, alignItems: "center" },}
-        , React.createElement('span', { style: { fontSize: 11, color: MUTED },}, matchTime.start ? fmtDuration(matchTime.end ? matchTime.end - matchTime.start : elapsed) : "Not started")
+        , React.createElement('span', { style: { fontSize: 11, color: isPaused ? ACCENT : MUTED },}
+          , matchTime.start ? fmtDuration(displayDuration) : "Not started"
+          , isPaused ? " ⏸" : ""
+        )
+        , matchTime.start && !matchTime.end && onPauseToggle && (
+          React.createElement('button', { onClick: onPauseToggle, style: {
+            padding: "2px 8px", borderRadius: 5, fontSize: 10, fontWeight: 700,
+            cursor: "pointer", border: "1px solid " + (isPaused ? "#52c41a" : ACCENT + "80"),
+            background: isPaused ? "#52c41a20" : "transparent",
+            color: isPaused ? "#52c41a" : ACCENT,
+          },}, isPaused ? "▶ Resume" : "⏸ Pause")
+        )
         , superTieBreak && React.createElement('span', { style: { fontSize: 10, color: ACCENT, fontWeight: 700 },}, "Super Tie-Break" )
         , score.tieBreak && React.createElement('span', { style: { fontSize: 10, color: "#ff6b35", fontWeight: 700 },}, "Tie-Break" )
       )
@@ -1852,7 +1881,10 @@ function ScoreOverwriteModal({ setup, score, onApply, onClose, T = THEMES.origin
       currentSet: newSets.length - 1,
       server: ow.server,
       matchWinner: null,
-      superTieBreak: score.superTieBreak,
+      superTieBreak: score.superTieBreak || false,
+      tieBreak: score.tieBreak || false,
+      tieBreakPts: score.tieBreakPts || 0,
+      tieBreakServer: score.tieBreakServer || ow.server,
     };
     onApply(corrected);
   };
@@ -2003,7 +2035,7 @@ function StepHeader({ num, label, color = "#5abaff", fontFamily }) {
   );
 }
 
-function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, undoPending, undoStack, points, T = THEMES.original, courtFlipped = false, onFlipCourt }) {
+function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast, undoPending, undoStack, points, T = THEMES.original, courtFlipped = false, onFlipCourt }) {
   const { player1, player2 } = setup;
   const { server } = score;
   const setT = (k, v) => setTag(p => ({ ...p, [k]: v }));
@@ -2071,6 +2103,53 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, undoPendin
               , server === pid ? (T.prefix || "🎾 ") : "", name
             )
           ))
+        )
+      )
+
+      /* ── QUICK-TAG BAR — one-tap for common fast outcomes ── */
+      , !inFaultMode && (
+        React.createElement('div', { style: { padding: "5px 12px", background: T.card2, borderBottom: "1px solid " + T.border, flexShrink: 0 },}
+          , React.createElement('div', { style: { fontSize: 8, fontWeight: 700, letterSpacing: 2, color: T.textMuted, textTransform: "uppercase", marginBottom: 4 },}, "Quick Tag")
+          , React.createElement('div', { style: { display: "flex", gap: 5 },}
+            , [
+              { label: "ACE", outcome: "Ace", color: "#52c41a", winner: server },
+              { label: "DBL FAULT", outcome: "Double Fault", color: DANGER, winner: server === "p1" ? "p2" : "p1" },
+              { label: "RET ERR", outcome: "Return Error", color: "#e07b54", winner: server },
+              { label: "RET WIN", outcome: "Return Winner", color: "#40916c", winner: server === "p1" ? "p2" : "p1" },
+            ].map(qt => (
+              React.createElement('button', { key: qt.label, style: {
+                flex: 1, padding: "7px 0", borderRadius: T.chipRadius || 6, fontSize: 10, fontWeight: 800,
+                cursor: "pointer", letterSpacing: 0.5, transition: "all 0.15s",
+                border: "1.5px solid " + qt.color + "80",
+                background: tag.outcome === qt.outcome ? qt.color + "30" : "transparent",
+                color: qt.color, fontFamily: T.fontBody,
+              },
+                onClick: () => {
+                  // One tap: fill all fields. If already filled with this outcome, log it.
+                  if (tag.outcome === qt.outcome && tag.serveType) {
+                    // Already set — trigger log
+                    onLog();
+                    return;
+                  }
+                  setTag(prev => ({
+                    ...EMPTY_TAG,
+                    serveType: prev.serveType || "1st Serve",
+                    outcome: qt.outcome,
+                    pointWinner: qt.winner,
+                    rallyLength: "0-4",
+                    serveSpin: prev.serveSpin,
+                    serveZone: prev.serveZone,
+                  }));
+                },}, qt.label
+                , tag.outcome === qt.outcome ? " ✓" : ""
+              )
+            ))
+          )
+          , tag.outcome && ["Ace","Double Fault","Return Error","Return Winner"].includes(tag.outcome) && tag.serveType && (
+            React.createElement('div', { style: { fontSize: 9, color: "#52c41a", fontWeight: 600, textAlign: "center", marginTop: 3 },}
+              , "Tap again to log · or scroll down to add details"
+            )
+          )
         )
       )
 
@@ -2246,8 +2325,8 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, undoPendin
                     setTag(p => ({
                     ...p,
                     outcome: p.outcome === o ? null : o,
-                    errorShot: (o === "Forced Error" || o === "Unforced Error") ? p.errorShot : null,
-                    errorDirection: (o === "Forced Error" || o === "Unforced Error") ? p.errorDirection : null,
+                    errorShot: (o === "Forced Error" || o === "Unforced Error" || o === "Return Error") ? p.errorShot : null,
+                    errorDirection: (o === "Forced Error" || o === "Unforced Error" || o === "Return Error") ? p.errorDirection : null,
                     shotType: (o === "Forced Error" || o === "Unforced Error" || o === "Return Error") ? null : p.shotType,
                     // Auto-assign point winner for clear outcomes
                     pointWinner: o === "Ace" || o === "Return Error" ? server
@@ -2420,8 +2499,26 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, undoPendin
           color: "#40916c",
           fontFamily: T.fontBody,
         },}, "↪ Redo")
+        , points.length > 0 && React.createElement('button', { onClick: onEditLast, style: {
+          flex: 1, padding: "8px 0", borderRadius: T.btnRadius || 8,
+          fontWeight: 700, fontSize: 12, cursor: "pointer",
+          border: "1.5px solid #5abaff",
+          background: "#5abaff18",
+          color: "#5abaff",
+          fontFamily: T.fontBody,
+        },}, "✎ Edit")
       )
       /* ── LOG / FAULT ACTION ── */
+      , !inFaultMode && !required && tag.serveType && (
+        React.createElement('div', { style: { padding: "2px 14px 0", flexShrink: 0 },}
+          , React.createElement('div', { style: { fontSize: 10, color: "#e07b54", fontWeight: 600, textAlign: "center" },}
+            , "⚠ Missing: "
+            , !tag.outcome ? "Outcome" : ""
+            , tag.outcome && !noRally && !tag.rallyLength ? "Rally Length" : ""
+            , tag.outcome && !noRally && tag.rallyLength && !resolvedWinner && !tag.pointWinner ? "Point Winner" : ""
+          )
+        )
+      )
       , React.createElement('div', { style: { ...s.actionBar, flexShrink: 0 },}
         , inFaultMode ? (
           React.createElement('button', {
@@ -2807,7 +2904,7 @@ function App() {
     setShowSuperTieModal(false);
     setScore(rebuildScore([], form.format, false));
     setPoints([]);
-    setMatchTime({ start: Date.now(), end: null });
+    setMatchTime({ start: Date.now(), end: null, pausedMs: 0, pausedAt: null });
     setTag(EMPTY_TAG);
     setTab("tag");
   };
@@ -2874,7 +2971,7 @@ function App() {
         setShowSuperTieModal(true);
       }
     }
-    setTag({ ...EMPTY_TAG, serveType: tag.serveType === "1st Serve" ? "1st Serve" : null });
+    setTag({ ...EMPTY_TAG, serveType: "1st Serve" });
     // Haptic feedback (iPad) + visual flash
     if (navigator.vibrate) navigator.vibrate(50);
     setLogFlash(true);
@@ -2921,6 +3018,40 @@ function App() {
     setUndoStack(prev => prev.slice(0, -1));
   };
 
+  const handleEditLast = () => {
+    if (!points.length) return;
+    const lastPoint = points[points.length - 1];
+    // Remove last point and rebuild score
+    const np = points.slice(0, -1);
+    setPoints(np);
+    setScore(rebuildScore(np, setup.format, superTieAt11));
+    // Load the point's tag data back into the form for editing
+    setTag({
+      serveType: lastPoint.serveType || null,
+      serveSpin: lastPoint.serveSpin || null,
+      serveSide: lastPoint.serveSide || null,
+      serveZone: lastPoint.serveZone || null,
+      serveFault: lastPoint.serveFault || null,
+      dfFaultType: lastPoint.dfFaultType || null,
+      returnHand: lastPoint.returnHand || null,
+      returnPosition: lastPoint.returnPosition || null,
+      returnLandZone: lastPoint.returnLandZone || null,
+      servePlusOne: lastPoint.servePlusOne || null,
+      sp1Dir: lastPoint.sp1Dir || null,
+      returnPlusOne: lastPoint.returnPlusOne || null,
+      rp1Dir: lastPoint.rp1Dir || null,
+      rallyLength: lastPoint.rallyLength || null,
+      outcome: lastPoint.outcome || null,
+      shotType: lastPoint.shotType || null,
+      errorShot: lastPoint.errorShot || null,
+      errorDirection: lastPoint.errorDirection || null,
+      netApproach: lastPoint.netApproach || false,
+      netPlayer: lastPoint.netPlayer || null,
+      pressurePoint: lastPoint.pressurePoint || false,
+      pointWinner: lastPoint.pointWinner || null,
+    });
+  };
+
   const handleOverwriteApply = (correctedScore) => {
     setScore(correctedScore);
     setShowOverwrite(false);
@@ -2929,6 +3060,19 @@ function App() {
   const [showEndConfirm, setShowEndConfirm] = useState(false);
 
   const handleEndMatch = () => setShowEndConfirm(true);
+
+  const handlePauseToggle = () => {
+    setMatchTime(prev => {
+      if (prev.pausedAt) {
+        // Resume: add paused duration to total pausedMs
+        const additionalPause = Date.now() - prev.pausedAt;
+        return { ...prev, pausedAt: null, pausedMs: (prev.pausedMs || 0) + additionalPause };
+      } else {
+        // Pause: record when we paused
+        return { ...prev, pausedAt: Date.now() };
+      }
+    });
+  };
 
   const confirmEndMatch = () => {
     const endTime = matchTime.end || Date.now();
@@ -2963,6 +3107,47 @@ function App() {
   };
 
   const [showHistory, setShowHistory] = useState(false);
+
+  // ── KEYBOARD SHORTCUTS ─────────────────────────────────────────
+  useEffect(() => {
+    if (!setup) return;
+    const handleKeyDown = (e) => {
+      // Don't intercept if user is typing in an input/textarea
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+      // Enter → Log point
+      if (e.key === "Enter" && tab === "tag") {
+        e.preventDefault();
+        handleLog();
+        return;
+      }
+      // Ctrl+Z or Cmd+Z → Undo
+      if ((e.ctrlKey || e.metaKey) && e.key === "z") {
+        e.preventDefault();
+        handleUndo();
+        return;
+      }
+      // Ctrl+Shift+Z or Cmd+Shift+Z → Redo
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "Z") {
+        e.preventDefault();
+        handleRedo();
+        return;
+      }
+      // Number keys 1-4 → Rally length (only in tag tab)
+      if (tab === "tag" && !e.ctrlKey && !e.metaKey) {
+        const rallyMap = { "1": "0-4", "2": "5-8", "3": "9-12", "4": "13+" };
+        if (rallyMap[e.key]) {
+          e.preventDefault();
+          setTag(prev => ({ ...prev, rallyLength: prev.rallyLength === rallyMap[e.key] ? null : rallyMap[e.key] }));
+          return;
+        }
+        // 'a' → Ace quick-tag, 'd' → Double fault, 'w' → Winner outcome
+        if (e.key === "a") { setTag(prev => ({ ...prev, serveType: prev.serveType || "1st Serve", outcome: "Ace", pointWinner: score.server, rallyLength: "0-4" })); return; }
+        if (e.key === "d") { setTag(prev => ({ ...prev, serveType: prev.serveType || "1st Serve", outcome: "Double Fault", pointWinner: score.server === "p1" ? "p2" : "p1", rallyLength: "0-4" })); return; }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [setup, tab, tag, score, points]);
 
   // Derived theme styles applied inline to root
   const tApp = {
@@ -3059,7 +3244,7 @@ function App() {
         )
       )
 
-      , score && React.createElement(ScoreBanner, { setup: setup, score: score, matchTime: matchTime, T: T,} )
+      , score && React.createElement(ScoreBanner, { setup: setup, score: score, matchTime: matchTime, onPauseToggle: handlePauseToggle, T: T,} )
 
       /* Point logged flash */
       , logFlash && React.createElement('div', { style: {
@@ -3131,7 +3316,7 @@ function App() {
         , tab === "tag" && (
           React.createElement(React.Fragment, null
             , React.createElement('div', { ref: tagPanelRef, style: { width: 520, background: CARD, borderRight: `1px solid #1e3a5f`, display: "flex", flexDirection: "column", overflowY: "auto", flexShrink: 0 },}
-              , React.createElement(TagPanel, { setup: setup, score: score, tag: tag, setTag: setTag, onLog: handleLog, onUndo: handleUndo, onRedo: handleRedo, undoPending: undoPending, undoStack: undoStack, points: points, T: T, courtFlipped: courtFlipped, onFlipCourt: handleFlipCourt,} )
+              , React.createElement(TagPanel, { setup: setup, score: score, tag: tag, setTag: setTag, onLog: handleLog, onUndo: handleUndo, onRedo: handleRedo, onEditLast: handleEditLast, undoPending: undoPending, undoStack: undoStack, points: points, T: T, courtFlipped: courtFlipped, onFlipCourt: handleFlipCourt,} )
             )
             , React.createElement('div', { style: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },}
               , React.createElement('div', { style: { padding: "7px 10px", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 },}
