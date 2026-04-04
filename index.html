@@ -1369,28 +1369,20 @@ function CourtZonePicker({ side, value, onChange, serverName, returnerName, flip
   // Zone coords — always in the OPPONENT half (far side from server)
   // When NOT flipped: server bottom → zones at top (y 12-133)
   // When flipped:     server top    → zones at bottom (y 147-270)
-  const zy = flipped ? 147 : 12;   // deep row y
-  const my = flipped ? 195 : 80;   // mid row y (service line)
-  const zh = flipped ? 46  : 66;   // deep row height
-  const mh = flipped ? 46  : 51;   // mid row height
-  const svcLineY = flipped ? 195 : 80; // opponent service line
+  const zy = flipped ? 147 : 12;   // zone row y
+  const zFull = flipped ? 46+46 : 66+51+2; // full height spanning deep+short
 
-  // Zone column definitions — depend on serve side
+  // Zone column definitions — 3 zones: Wide, Body, T
+  // Each zone spans the full service box height (no Deep/Short split)
   const zonesLeft = [
-    { id:"Wide-Deep",  lbl:"Wide", sub:"Deep",  x:73,  y:zy, w:32, h:zh },
-    { id:"Body-Deep",  lbl:"Body", sub:"Deep",  x:107, y:zy, w:31, h:zh },
-    { id:"T-Deep",     lbl:"T",    sub:"Deep",  x:140, y:zy, w:28, h:zh },
-    { id:"Wide-Short", lbl:"Wide", sub:"Short", x:73,  y:my, w:32, h:mh },
-    { id:"Body-Short", lbl:"Body", sub:"Short", x:107, y:my, w:31, h:mh },
-    { id:"T-Short",    lbl:"T",    sub:"Short", x:140, y:my, w:28, h:mh },
+    { id:"Wide",  lbl:"Wide", x:73,  y:zy, w:32, h:zFull },
+    { id:"Body",  lbl:"Body", x:107, y:zy, w:31, h:zFull },
+    { id:"T",     lbl:"T",    x:140, y:zy, w:28, h:zFull },
   ];
   const zonesRight = [
-    { id:"T-Deep",     lbl:"T",    sub:"Deep",  x:172, y:zy, w:28, h:zh },
-    { id:"Body-Deep",  lbl:"Body", sub:"Deep",  x:202, y:zy, w:31, h:zh },
-    { id:"Wide-Deep",  lbl:"Wide", sub:"Deep",  x:235, y:zy, w:32, h:zh },
-    { id:"T-Short",    lbl:"T",    sub:"Short", x:172, y:my, w:28, h:mh },
-    { id:"Body-Short", lbl:"Body", sub:"Short", x:202, y:my, w:31, h:mh },
-    { id:"Wide-Short", lbl:"Wide", sub:"Short", x:235, y:my, w:32, h:mh },
+    { id:"T",     lbl:"T",    x:172, y:zy, w:28, h:zFull },
+    { id:"Body",  lbl:"Body", x:202, y:zy, w:31, h:zFull },
+    { id:"Wide",  lbl:"Wide", x:235, y:zy, w:32, h:zFull },
   ];
   // Horizontal flip: when flipped, the active/dim sides SWAP
   // NOT flipped: Deuce serve → lands in LEFT (Ad box), Ad serve → lands in RIGHT (Deuce box)
@@ -1405,7 +1397,7 @@ function CourtZonePicker({ side, value, onChange, serverName, returnerName, flip
   // Net and service line positions
   const netY   = 133;
   const netTop = flipped ? 192 : 129;   // net bar top
-  const activeLabelY = flipped ? (my + mh + 10) : (zy - 5);
+  const activeLabelY = flipped ? (zy + zFull + 10) : (zy - 5);
   const activeLabelX = flipped
     ? (isDeuce ? 219 : 121)   // flipped: Deuce active is RIGHT, Ad active is LEFT
     : (isDeuce ? 121 : 219);  // normal:  Deuce active is LEFT, Ad active is RIGHT
@@ -1456,20 +1448,18 @@ function CourtZonePicker({ side, value, onChange, serverName, returnerName, flip
             const sel = value === z.id;
             return (
               React.createElement('g', { key: "a-"+z.x+"-"+z.y, onClick: () => onChange(value === z.id ? null : z.id), style: { cursor: "pointer" },}
-                , React.createElement('rect', { x: z.x, y: z.y, width: z.w, height: z.h, rx: "2",
+                , React.createElement('rect', { x: z.x, y: z.y, width: z.w, height: z.h, rx: "3",
                   fill: sel ? "rgba(244,211,94,0.6)" : "rgba(255,255,255,0.14)",
                   stroke: sel ? "#f4d35e" : "rgba(255,255,255,0.45)",
-                  strokeWidth: sel ? "2" : "1.5",})
-                , React.createElement('text', { x: z.x+z.w/2, y: z.y+z.h/2-4, textAnchor: "middle", fontSize: "9",
-                  fill: sel ? "#000" : "rgba(255,255,255,0.9)", fontWeight: "500",}, z.lbl)
-                , React.createElement('text', { x: z.x+z.w/2, y: z.y+z.h/2+7, textAnchor: "middle", fontSize: "7",
-                  fill: sel ? "#333" : "rgba(255,255,255,0.5)",}, z.sub)
+                  strokeWidth: sel ? "2.5" : "1.5",})
+                , React.createElement('text', { x: z.x+z.w/2, y: z.y+z.h/2+4, textAnchor: "middle", fontSize: "12",
+                  fill: sel ? "#000" : "rgba(255,255,255,0.9)", fontWeight: "700",}, z.lbl)
               )
             );
           })
           /* Dimmed zones */
           , dimZones.map(z => (
-            React.createElement('rect', { key: "d-"+z.x+"-"+z.y, x: z.x, y: z.y, width: z.w, height: z.h, rx: "2",
+            React.createElement('rect', { key: "d-"+z.x+"-"+z.y, x: z.x, y: z.y, width: z.w, height: z.h, rx: "3",
               fill: "rgba(255,255,255,0.03)", stroke: "rgba(255,255,255,0.08)", strokeWidth: "1",})
           ))
           /* ── FLIP BUTTON on court ── top-right corner */
@@ -1484,7 +1474,7 @@ function CourtZonePicker({ side, value, onChange, serverName, returnerName, flip
       )
       , value && (
         React.createElement('div', { style: { fontSize: 10, color: ACCENT, fontWeight: 700, textAlign: "center", marginTop: 3 },}
-          , "✓ " + value + " (" + boxLabel + ")"
+          , "✓ " + value + " — " + boxLabel
         )
       )
     )
@@ -1616,29 +1606,30 @@ function ReturnLandPicker({ value, onChange, serveSide, serverName, returnerName
 // ─── HEATMAPS (for report) ────────────────────────────────────────────────────
 function ServeZoneHeatmap({ title, zones, side }) {
   const leftToRight = side === "Ad" ? ["T","Body","Wide"] : ["Wide","Body","T"];
-  const rows = ["Deep","Mid"];
-  const allZones = rows.flatMap(r => leftToRight.map(c => c + "-" + r));
-  const max = Math.max(1, ...Object.values(zones));
+  // Support both old 6-zone format (Wide-Deep, etc.) and new 3-zone format (Wide, Body, T)
+  // Merge old Deep+Short into single zone count if needed
+  const mergedZones = {};
+  leftToRight.forEach(c => {
+    mergedZones[c] = (zones[c] || 0) + (zones[c + "-Deep"] || 0) + (zones[c + "-Short"] || 0) + (zones[c + "-Mid"] || 0);
+  });
+  const max = Math.max(1, ...Object.values(mergedZones));
   return (
     React.createElement('div', { style: { ...s.statCard },}
       , React.createElement('div', { style: { ...s.statTitle, marginBottom: 6, color: side === "Deuce" ? "#7eb3ff" : ACCENT },}, title, " (" , side, ")")
       , React.createElement('div', { style: { background: COURT_GREEN, borderRadius: 7, padding: 4, border: `2px solid #ffffff30` },}
-        , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 3, height: 80 },}
-          , allZones.map(z => {
-            const count = zones[z] || 0;
+        , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 4, height: 60 },}
+          , leftToRight.map(z => {
+            const count = mergedZones[z] || 0;
             const intensity = count / max;
             return (
-              React.createElement('div', { key: z, style: { borderRadius: 5, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "rgba(244,211,94," + 0.1 + intensity * 0.85 + ")", border: "1px solid rgba(244,211,94," + 0.2 + intensity * 0.5 + ")" },}
-                , React.createElement('div', { style: { fontSize: 15, fontWeight: 900, color: intensity > 0.45 ? "#000" : ACCENT },}, count)
-                , React.createElement('div', { style: { fontSize: 7, color: intensity > 0.45 ? "#333" : WHITE + "70", fontWeight: 700 },}, z)
+              React.createElement('div', { key: z, style: { borderRadius: 6, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "rgba(244,211,94," + (0.1 + intensity * 0.85) + ")", border: "1.5px solid rgba(244,211,94," + (0.2 + intensity * 0.5) + ")" },}
+                , React.createElement('div', { style: { fontSize: 18, fontWeight: 900, color: intensity > 0.45 ? "#000" : ACCENT },}, count)
+                , React.createElement('div', { style: { fontSize: 9, color: intensity > 0.45 ? "#333" : WHITE + "80", fontWeight: 700 },}, z)
               )
             );
           })
         )
-        , React.createElement('div', { style: { display: "flex", justifyContent: "space-around", paddingTop: 4, borderTop: `1px solid #ffffff30`, marginTop: 3 },}
-          , leftToRight.map(c => React.createElement('span', { key: c, style: { fontSize: 8, color: WHITE + "80", fontWeight: 700 },}, c))
-        )
-        , React.createElement('div', { style: { height: 4, background: "#ffffff60", borderRadius: 2, marginTop: 3 },} )
+        , React.createElement('div', { style: { height: 4, background: "#ffffff60", borderRadius: 2, marginTop: 4 },} )
       )
     )
   );
@@ -3291,11 +3282,20 @@ const VoiceEngine = {
     if (has("doublefault") || (has("double") && has("fault"))) return { action: "quickTag", outcome: "Double Fault" };
     if (has("returnerror") || (has("return") && has("error"))) return { action: "quickTag", outcome: "Return Error" };
     if (has("returnwinner") || (has("return") && has("winner"))) return { action: "quickTag", outcome: "Return Winner" };
-    if (has("let")) return { action: "let" };
+    if (has("let") && !has("left")) return { action: "let" };
+
+    // ── Compound quick commands: "ace wide" / "ace tee" ──
+    // (handled by quickTag + zone in same utterance — quickTag takes priority, zone set separately)
 
     // ── Fault ──
-    if (has("fault") && !has("double") && !has("foot")) return { action: "fault" };
+    if (has("fault") && !has("double") && !has("foot")) {
+      // Check for fault type in same phrase: "fault net" / "fault long" / "fault wide"
+      if (has("net")) return { action: "faultWithType", type: "Net" };
+      if (has("long")) return { action: "faultWithType", type: "Long" };
+      return { action: "fault" };
+    }
     if (has("foot") && has("fault")) return { action: "faultType", type: "Foot Fault" };
+    if (has("net") && has("fault")) return { action: "faultType", type: "Net" };
 
     // ── Serve type ──
     if (has("first") && has("serve")) return { action: "setServe", type: "1st Serve" };
@@ -3303,47 +3303,79 @@ const VoiceEngine = {
 
     // ── Outcomes ──
     if (has("winner")) return { action: "setOutcome", outcome: "Winner" };
-    if (has("unforcederror") || (has("unforced"))) return { action: "setOutcome", outcome: "Unforced Error" };
+    if (has("unforcederror") || has("unforced")) return { action: "setOutcome", outcome: "Unforced Error" };
     if (has("forcederror") || (has("forced") && has("error"))) return { action: "setOutcome", outcome: "Forced Error" };
+    if (has("error") && !has("return") && !has("forced") && !has("unforced")) return { action: "setOutcome", outcome: "Unforced Error" };
 
     // ── Serve spin ──
-    if (has("flat")) return { action: "setSpin", spin: "Flat" };
-    if (has("slice")) return { action: "setSpin", spin: "Slice" };
+    if (has("flat") && !has("flat out")) return { action: "setSpin", spin: "Flat" };
+    if (has("slice") && !has("slice forehand") && !has("slice backhand")) return { action: "setSpin", spin: "Slice" };
     if (has("kick")) return { action: "setSpin", spin: "Kick" };
+    if (has("underarm") || has("under arm") || has("underhand")) return { action: "setSpin", spin: "Underarm" };
 
-    // ── Serve zone ──
-    if (has("wide") && has("deep")) return { action: "setZone", zone: "Wide-Deep" };
-    if (has("body") && has("deep")) return { action: "setZone", zone: "Body-Deep" };
-    if (has("tee") || (has("t") && has("deep"))) return { action: "setZone", zone: "T-Deep" };
-    if (has("wide") && has("short")) return { action: "setZone", zone: "Wide-Short" };
-    if (has("wide")) return { action: "setZone", zone: "Wide-Deep" };
-    if (has("body")) return { action: "setZone", zone: "Body-Deep" };
-    if (has("tee") || text === "t") return { action: "setZone", zone: "T-Deep" };
+    // ── Serve zone (3 zones: Wide, Body, T) ──
+    if (has("wide")) return { action: "setZone", zone: "Wide" };
+    if (has("body") && !has("nobody")) return { action: "setZone", zone: "Body" };
+    if (has("tee") || text === "t" || (has("center") && has("serve")) || has("middle")) return { action: "setZone", zone: "T" };
 
-    // ── Shot types ──
+    // ── Shot types (context-aware: error vs winner) ──
+    if (has("forehand") && has("volley")) return { action: "setShot", shot: "Volley Forehand" };
+    if (has("backhand") && has("volley")) return { action: "setShot", shot: "Volley Backhand" };
+    if (has("slice") && has("forehand")) return { action: "setShot", shot: "Slice Forehand" };
+    if (has("slice") && has("backhand")) return { action: "setShot", shot: "Slice Backhand" };
+    if (has("approach") && has("forehand")) return { action: "setShot", shot: "Approach Forehand" };
+    if (has("approach") && has("backhand")) return { action: "setShot", shot: "Approach Backhand" };
     if (has("forehand")) return { action: "setShot", shot: "Forehand" };
     if (has("backhand")) return { action: "setShot", shot: "Backhand" };
     if (has("volley")) return { action: "setShot", shot: "Volley" };
     if (has("overhead") || has("smash")) return { action: "setShot", shot: "Overhead" };
-    if (has("dropshot")) return { action: "setShot", shot: "Drop Shot" };
+    if (has("dropshot") || (has("drop") && has("shot"))) return { action: "setShot", shot: "Drop Shot" };
+    if (has("lob")) return { action: "setShot", shot: "Lob" };
+    if (has("tweener") || has("between") && has("legs")) return { action: "setShot", shot: "Tweener" };
+    if (has("half") && has("volley")) return { action: "setShot", shot: "Half Volley" };
+
+    // ── Return hand ──
+    if (has("return") && has("forehand")) return { action: "setReturnHand", hand: "Forehand" };
+    if (has("return") && has("backhand")) return { action: "setReturnHand", hand: "Backhand" };
 
     // ── Error direction ──
-    if (has("net") && (has("into") || has("in"))) return { action: "setErrorDir", dir: "Net" };
-    if (has("long") || has("out") && has("long")) return { action: "setErrorDir", dir: "Long" };
+    if (has("into") && has("net")) return { action: "setErrorDir", dir: "Net" };
+    if (has("in") && has("net") && !has("winner")) return { action: "setErrorDir", dir: "Net" };
+    if (has("long") && !has("rally")) return { action: "setErrorDir", dir: "Long" };
+    if (has("out") && !has("long") && !has("rally")) return { action: "setErrorDir", dir: "Wide" };
 
     // ── Rally length ──
     if (has("short") && has("rally")) return { action: "setRally", rally: "0-4" };
     if (has("medium") && has("rally")) return { action: "setRally", rally: "5-8" };
     if (has("long") && has("rally")) return { action: "setRally", rally: "9-12" };
+    if (has("very") && has("long")) return { action: "setRally", rally: "13+" };
+
+    // ── Net approach ──
+    if (has("net") && has("approach")) return { action: "netApproach", who: "server" };
+    if (has("approach") && has("net")) return { action: "netApproach", who: "server" };
+    if (has("came") && has("net")) return { action: "netApproach", who: "server" };
+    if (has("serve") && has("volley")) return { action: "netApproach", who: "server" };
+
+    // ── Direction (serve+1 / return+1) ──
+    if (has("crosscourt") || has("cross")) return { action: "setDirection", dir: "Cross-Court" };
+    if (has("downtheline") || (has("down") && has("line"))) return { action: "setDirection", dir: "Down-the-Line" };
 
     // ── Point winner ──
-    if (has("player") && has("one") || has("server") && has("wins")) return { action: "setWinner", winner: "server" };
-    if (has("player") && has("two") || has("returner") && has("wins")) return { action: "setWinner", winner: "returner" };
+    if (has("server") && (has("wins") || has("won") || has("point"))) return { action: "setWinner", winner: "server" };
+    if (has("returner") && (has("wins") || has("won") || has("point"))) return { action: "setWinner", winner: "returner" };
+    if (has("player") && has("one")) return { action: "setWinner", winner: "server" };
+    if (has("player") && has("two")) return { action: "setWinner", winner: "returner" };
 
     // ── Controls ──
-    if (has("undo")) return { action: "undo" };
-    if (has("log") || has("lock") || has("confirm")) return { action: "log" };
-    if (has("flip")) return { action: "flip" };
+    if (has("undo") || has("take") && has("back")) return { action: "undo" };
+    if (has("redo")) return { action: "redo" };
+    if (has("log") || has("lock") || has("confirm") || has("done") || has("next")) return { action: "log" };
+    if (has("flip") || has("rotate") || has("switch") && has("end")) return { action: "flip" };
+    if (has("edit") || has("correct")) return { action: "editLast" };
+    if (has("pause")) return { action: "pause" };
+    if (has("resume")) return { action: "resume" };
+    if (has("full") && has("width") || has("expand")) return { action: "fullWidth" };
+    if (has("split") || has("show") && has("log")) return { action: "splitView" };
 
     return null; // unrecognized
   },
@@ -3818,6 +3850,41 @@ function App() {
             break;
           case "flip":
             setCourtFlipped(f => !f);
+            break;
+          case "faultWithType":
+            setTag(prev => ({ ...prev, serveType: prev.serveType || "1st Serve", serveFault: cmd.type }));
+            break;
+          case "setReturnHand":
+            setTag(prev => ({ ...prev, returnHand: cmd.hand }));
+            break;
+          case "netApproach":
+            setTag(prev => ({ ...prev, netApproach: cmd.who || "server", netPlayer: cmd.who === "returner" ? returner : srv }));
+            break;
+          case "setDirection":
+            // Apply to whichever +1 direction is active
+            setTag(prev => {
+              if (prev.servePlusOne && prev.servePlusOne !== "N/A" && !prev.sp1Dir) return { ...prev, sp1Dir: cmd.dir };
+              if (prev.returnPlusOne && prev.returnPlusOne !== "N/A" && !prev.rp1Dir) return { ...prev, rp1Dir: cmd.dir };
+              return { ...prev, sp1Dir: cmd.dir };
+            });
+            break;
+          case "redo":
+            handleRedo();
+            break;
+          case "editLast":
+            handleEditLast();
+            break;
+          case "pause":
+            if (!matchTime.pausedAt) handlePauseToggle();
+            break;
+          case "resume":
+            if (matchTime.pausedAt) handlePauseToggle();
+            break;
+          case "fullWidth":
+            setTagFullWidth(true);
+            break;
+          case "splitView":
+            setTagFullWidth(false);
             break;
         }
       }, (status) => {
