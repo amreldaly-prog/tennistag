@@ -184,12 +184,23 @@ const THEMES = {
 const THEME_LIST = Object.values(THEMES);
 
 // ─── CLOUD STORAGE MODULE ────────────────────────────────────────────────────
-// Firebase Firestore integration for match persistence and sync.
-// To enable: set CLOUD_ENABLED = true and configure your Firebase project below.
-const CLOUD_ENABLED = false; // Set to true when Firebase is configured
+// Firebase Firestore + Auth integration for match persistence and sync.
+//
+// ── SETUP INSTRUCTIONS ──
+// 1. Go to https://console.firebase.google.com
+// 2. Create a new project (or use existing)
+// 3. Add a Web App (Settings → General → Your apps → Add app → Web)
+// 4. Copy the firebaseConfig object and paste below
+// 5. Enable Authentication → Sign-in method → Email/Password (enable)
+// 6. Enable Authentication → Sign-in method → Anonymous (enable)
+// 7. Create Firestore Database (Cloud Firestore → Create database → Start in test mode)
+// 8. Set CLOUD_ENABLED = true below
+// 9. Deploy Firestore security rules (see FIRESTORE_RULES below)
+//
+const CLOUD_ENABLED = false; // ← Set to true after Firebase is configured
 const FIREBASE_CONFIG = {
-  // Replace with your Firebase project config:
-  // apiKey: "YOUR_API_KEY",
+  // ← Paste your Firebase config here:
+  // apiKey: "AIza...",
   // authDomain: "your-project.firebaseapp.com",
   // projectId: "your-project-id",
   // storageBucket: "your-project.appspot.com",
@@ -197,47 +208,184 @@ const FIREBASE_CONFIG = {
   // appId: "1:123456789:web:abc123"
 };
 
+// Recommended Firestore security rules (paste into Firebase Console → Firestore → Rules):
+// ─────────────────────────────────────────────────────────────────
+// rules_version = '2';
+// service cloud.firestore {
+//   match /databases/{database}/documents {
+//     // Users can only read/write their own data
+//     match /users/{userId}/{document=**} {
+//       allow read, write: if request.auth != null && request.auth.uid == userId;
+//     }
+//     // Shared matches: anyone with the link can read
+//     match /shared/{matchId} {
+//       allow read: if true;
+//       allow write: if request.auth != null;
+//     }
+//   }
+// }
+// ─────────────────────────────────────────────────────────────────
+
 const CloudStorage = {
   _db: null,
+  _auth: null,
+  _user: null,
   _initialized: false,
+  _listeners: [],
+  _syncStatus: "idle", // idle | syncing | synced | error | offline
 
-  // Initialize Firebase — call once at app start
+  // ── Initialize Firebase + Auth + Firestore ──────────────────
   init: async function() {
     if (!CLOUD_ENABLED || this._initialized) return false;
     try {
-      // Dynamically load Firebase SDK
+      // Dynamically load Firebase SDK (compat version for simpler API)
       if (typeof firebase === "undefined") {
-        await new Promise((resolve, reject) => {
-          const s1 = document.createElement("script");
-          s1.src = "https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js";
-          s1.onload = () => {
-            const s2 = document.createElement("script");
-            s2.src = "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js";
-            s2.onload = resolve;
-            s2.onerror = reject;
-            document.head.appendChild(s2);
-          };
-          s1.onerror = reject;
-          document.head.appendChild(s1);
-        });
+        await this._loadScript("https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js");
+        await Promise.all([
+          this._loadScript("https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"),
+          this._loadScript("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"),
+        ]);
       }
-      firebase.initializeApp(FIREBASE_CONFIG);
+      // Initialize app (only once)
+      if (!firebase.apps.length) {
+        firebase.initializeApp(FIREBASE_CONFIG);
+      }
+      this._auth = firebase.auth();
       this._db = firebase.firestore();
+
+      // Enable offline persistence (cache-first for courtside use)
+      try {
+        await this._db.enablePersistence({ synchronizeTabs: true });
+        console.log("☁️ Offline persistence enabled");
+      } catch (e) {
+        if (e.code === "failed-precondition") {
+          console.warn("☁️ Multiple tabs open — persistence limited to one tab");
+        } else if (e.code === "unimplemented") {
+          console.warn("☁️ Browser doesn't support persistence");
+        }
+      }
+
+      // Listen for online/offline status
+      this._db.enableNetwork().catch(() => {});
+      window.addEventListener("online", () => {
+        this._db.enableNetwork();
+        this._syncStatus = "syncing";
+        this._notifyListeners();
+      });
+      window.addEventListener("offline", () => {
+        this._syncStatus = "offline";
+        this._notifyListeners();
+      });
+
       this._initialized = true;
       console.log("☁️ Cloud storage initialized");
       return true;
     } catch (e) {
-      console.warn("☁️ Cloud storage failed to initialize:", e);
+      console.error("☁️ Init failed:", e);
       return false;
     }
   },
 
-  // Save a complete match to Firestore
-  saveMatch: async function(matchData) {
-    if (!this._db) return null;
+  _loadScript: function(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = reject;
+      document.head.appendChild(s);
+    });
+  },
+
+  // ── Sync status listeners ───────────────────────────────────
+  onSyncChange: function(callback) {
+    this._listeners.push(callback);
+    return () => { this._listeners = this._listeners.filter(l => l !== callback); };
+  },
+  _notifyListeners: function() {
+    this._listeners.forEach(l => l(this._syncStatus));
+  },
+
+  // ── AUTH: Sign up with email/password ───────────────────────
+  signUp: async function(email, password, displayName) {
+    if (!this._auth) return { error: "Not initialized" };
     try {
-      const docId = matchData.setup.player1.replace(/\s/g,"_") + "_vs_" +
-                    matchData.setup.player2.replace(/\s/g,"_") + "_" +
+      const cred = await this._auth.createUserWithEmailAndPassword(email, password);
+      if (displayName) {
+        await cred.user.updateProfile({ displayName: displayName });
+      }
+      this._user = cred.user;
+      // Create user profile document
+      await this._db.collection("users").doc(cred.user.uid).set({
+        email: email,
+        displayName: displayName || "",
+        createdAt: Date.now(),
+      }, { merge: true });
+      return { user: cred.user };
+    } catch (e) {
+      return { error: e.message };
+    }
+  },
+
+  // ── AUTH: Sign in with email/password ───────────────────────
+  signIn: async function(email, password) {
+    if (!this._auth) return { error: "Not initialized" };
+    try {
+      const cred = await this._auth.signInWithEmailAndPassword(email, password);
+      this._user = cred.user;
+      return { user: cred.user };
+    } catch (e) {
+      return { error: e.message };
+    }
+  },
+
+  // ── AUTH: Anonymous sign-in (no account needed) ─────────────
+  signInAnonymous: async function() {
+    if (!this._auth) return { error: "Not initialized" };
+    try {
+      const cred = await this._auth.signInAnonymously();
+      this._user = cred.user;
+      return { user: cred.user };
+    } catch (e) {
+      return { error: e.message };
+    }
+  },
+
+  // ── AUTH: Sign out ──────────────────────────────────────────
+  signOut: async function() {
+    if (!this._auth) return;
+    try {
+      await this._auth.signOut();
+      this._user = null;
+    } catch (e) { console.error("Sign out failed:", e); }
+  },
+
+  // ── AUTH: Get current user ──────────────────────────────────
+  getUser: function() { return this._user || (this._auth && this._auth.currentUser); },
+
+  // ── AUTH: Listen for auth state changes ─────────────────────
+  onAuthChange: function(callback) {
+    if (!this._auth) return () => {};
+    return this._auth.onAuthStateChanged(user => {
+      this._user = user;
+      callback(user);
+    });
+  },
+
+  // ── Helper: get user-scoped collection path ─────────────────
+  _userPath: function() {
+    const uid = this.getUser() && this.getUser().uid;
+    if (!uid) throw new Error("Not authenticated");
+    return "users/" + uid;
+  },
+
+  // ── MATCHES: Save a complete match ──────────────────────────
+  saveMatch: async function(matchData) {
+    if (!this._db || !this.getUser()) return null;
+    try {
+      this._syncStatus = "syncing";
+      this._notifyListeners();
+      const docId = matchData.setup.player1.replace(/[^a-zA-Z0-9]/g, "") + "_vs_" +
+                    matchData.setup.player2.replace(/[^a-zA-Z0-9]/g, "") + "_" +
                     matchData.setup.date + "_" + Date.now();
       const doc = {
         setup: matchData.setup,
@@ -249,23 +397,29 @@ const CloudStorage = {
         savedAt: Date.now(),
         pointCount: matchData.points.length,
         matchComplete: !!matchData.matchTime.end,
+        userId: this.getUser().uid,
       };
-      await this._db.collection("matches").doc(docId).set(doc);
+      await this._db.doc(this._userPath() + "/matches/" + docId).set(doc);
+      this._syncStatus = "synced";
+      this._notifyListeners();
       console.log("☁️ Match saved:", docId);
       return docId;
     } catch (e) {
+      this._syncStatus = "error";
+      this._notifyListeners();
       console.error("☁️ Save failed:", e);
       return null;
     }
   },
 
-  // Auto-save current session (upsert by session key)
+  // ── MATCHES: Auto-save active session ───────────────────────
   autoSave: async function(sessionKey, matchData) {
-    if (!this._db) return false;
+    if (!this._db || !this.getUser()) return false;
     try {
-      await this._db.collection("sessions").doc(sessionKey).set({
+      await this._db.doc(this._userPath() + "/sessions/" + sessionKey).set({
         ...matchData,
         savedAt: Date.now(),
+        userId: this.getUser().uid,
       }, { merge: true });
       return true;
     } catch (e) {
@@ -274,13 +428,13 @@ const CloudStorage = {
     }
   },
 
-  // List all saved matches
+  // ── MATCHES: List all saved matches ─────────────────────────
   listMatches: async function() {
-    if (!this._db) return [];
+    if (!this._db || !this.getUser()) return [];
     try {
-      const snap = await this._db.collection("matches")
+      const snap = await this._db.collection(this._userPath() + "/matches")
         .orderBy("savedAt", "desc")
-        .limit(50)
+        .limit(100)
         .get();
       return snap.docs.map(d => ({ id: d.id, ...d.data() }));
     } catch (e) {
@@ -289,11 +443,11 @@ const CloudStorage = {
     }
   },
 
-  // Load a specific match
+  // ── MATCHES: Load a specific match ──────────────────────────
   loadMatch: async function(docId) {
-    if (!this._db) return null;
+    if (!this._db || !this.getUser()) return null;
     try {
-      const doc = await this._db.collection("matches").doc(docId).get();
+      const doc = await this._db.doc(this._userPath() + "/matches/" + docId).get();
       return doc.exists ? { id: doc.id, ...doc.data() } : null;
     } catch (e) {
       console.error("☁️ Load failed:", e);
@@ -301,72 +455,300 @@ const CloudStorage = {
     }
   },
 
-  // Delete a match
+  // ── MATCHES: Delete a match ─────────────────────────────────
   deleteMatch: async function(docId) {
-    if (!this._db) return false;
+    if (!this._db || !this.getUser()) return false;
     try {
-      await this._db.collection("matches").doc(docId).delete();
+      await this._db.doc(this._userPath() + "/matches/" + docId).delete();
       return true;
     } catch (e) {
       console.error("☁️ Delete failed:", e);
       return false;
     }
   },
+
+  // ── MATCHES: Share a match (copy to /shared collection) ─────
+  shareMatch: async function(docId) {
+    if (!this._db || !this.getUser()) return null;
+    try {
+      const match = await this.loadMatch(docId);
+      if (!match) return null;
+      const shareId = "share_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+      await this._db.doc("shared/" + shareId).set({
+        ...match,
+        sharedBy: this.getUser().uid,
+        sharedByName: this.getUser().displayName || this.getUser().email || "Anonymous",
+        sharedAt: Date.now(),
+      });
+      return shareId;
+    } catch (e) {
+      console.error("☁️ Share failed:", e);
+      return null;
+    }
+  },
+
+  // ── MATCHES: Load a shared match (no auth needed for read) ──
+  loadSharedMatch: async function(shareId) {
+    if (!this._db) return null;
+    try {
+      const doc = await this._db.doc("shared/" + shareId).get();
+      return doc.exists ? { id: doc.id, ...doc.data() } : null;
+    } catch (e) {
+      console.error("☁️ Load shared failed:", e);
+      return null;
+    }
+  },
 };
 
-// ─── MATCH HISTORY MODAL ─────────────────────────────────────────────────────
+// ─── CLOUD AUTH UI COMPONENT ─────────────────────────────────────────────────
+function CloudAuthModal({ onAuth, onClose, onSkip, T = THEMES.original }) {
+  const [mode, setMode] = useState("signin"); // signin | signup
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async () => {
+    setError(null);
+    setLoading(true);
+    let result;
+    if (mode === "signup") {
+      result = await CloudStorage.signUp(email, password, name);
+    } else {
+      result = await CloudStorage.signIn(email, password);
+    }
+    setLoading(false);
+    if (result.error) {
+      setError(result.error);
+    } else {
+      onAuth(result.user);
+    }
+  };
+
+  const handleAnonymous = async () => {
+    setLoading(true);
+    const result = await CloudStorage.signInAnonymous();
+    setLoading(false);
+    if (result.error) {
+      setError(result.error);
+    } else {
+      onAuth(result.user);
+    }
+  };
+
+  return (
+    React.createElement('div', { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.88)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },}
+      , React.createElement('div', { style: { background: T.card, borderRadius: 16, padding: 28, maxWidth: 420, width: "100%", border: "2px solid " + T.accent, boxShadow: "0 20px 60px rgba(0,0,0,0.8)" },}
+        , React.createElement('div', { style: { fontSize: 28, textAlign: "center", marginBottom: 6 },}, "☁️")
+        , React.createElement('div', { style: { fontSize: 18, fontWeight: 900, color: T.text, textAlign: "center", marginBottom: 4, fontFamily: T.fontDisplay },}
+          , mode === "signup" ? "Create Account" : "Sign In"
+        )
+        , React.createElement('div', { style: { fontSize: 11, color: T.textMuted, textAlign: "center", marginBottom: 20 },}
+          , "Sync your match data across devices"
+        )
+
+        /* Toggle Sign In / Sign Up */
+        , React.createElement('div', { style: { display: "flex", marginBottom: 16, borderRadius: 8, overflow: "hidden", border: "1px solid " + T.border },}
+          , ["signin", "signup"].map(m => (
+            React.createElement('button', { key: m, onClick: () => { setMode(m); setError(null); }, style: {
+              flex: 1, padding: "8px 0", fontSize: 12, fontWeight: 700, cursor: "pointer",
+              border: "none", background: mode === m ? T.accent + "25" : "transparent",
+              color: mode === m ? T.accent : T.textMuted,
+            },}, m === "signin" ? "Sign In" : "Create Account")
+          ))
+        )
+
+        /* Name field (signup only) */
+        , mode === "signup" && (
+          React.createElement('input', { placeholder: "Your name (optional)", value: name,
+            onChange: e => setName(e.target.value),
+            style: { ...s.input, marginBottom: 10, background: T.bgDeep, color: T.text, border: "1px solid " + T.border },})
+        )
+
+        /* Email */
+        , React.createElement('input', { type: "email", placeholder: "Email address", value: email,
+          onChange: e => setEmail(e.target.value),
+          style: { ...s.input, marginBottom: 10, background: T.bgDeep, color: T.text, border: "1px solid " + T.border },})
+
+        /* Password */
+        , React.createElement('input', { type: "password", placeholder: "Password (min 6 chars)", value: password,
+          onChange: e => setPassword(e.target.value),
+          onKeyDown: e => { if (e.key === "Enter") handleSubmit(); },
+          style: { ...s.input, marginBottom: 6, background: T.bgDeep, color: T.text, border: "1px solid " + T.border },})
+
+        /* Error */
+        , error && (
+          React.createElement('div', { style: { fontSize: 11, color: DANGER, marginBottom: 10, padding: "6px 10px", borderRadius: 6, background: DANGER + "15", border: "1px solid " + DANGER + "40" },}, error)
+        )
+
+        /* Submit button */
+        , React.createElement('button', { onClick: handleSubmit, disabled: loading || !email || password.length < 6,
+          style: { width: "100%", padding: "12px 0", borderRadius: 10, fontWeight: 800, fontSize: 15,
+            cursor: loading ? "wait" : "pointer",
+            border: "2px solid " + T.accent, background: T.accent + "25", color: T.accent,
+            opacity: loading || !email || password.length < 6 ? 0.5 : 1,
+            marginBottom: 10, fontFamily: T.fontDisplay },}
+          , loading ? "..." : (mode === "signup" ? "Create Account" : "Sign In")
+        )
+
+        /* Anonymous option */
+        , React.createElement('button', { onClick: handleAnonymous, disabled: loading,
+          style: { width: "100%", padding: "10px 0", borderRadius: 10, fontWeight: 700, fontSize: 13,
+            cursor: "pointer", border: "1px solid " + T.border, background: "transparent",
+            color: T.textMuted, marginBottom: 10 },}
+          , "Continue without account (data on this device only)"
+        )
+
+        /* Skip / Close */
+        , React.createElement('div', { style: { display: "flex", gap: 10 },}
+          , onSkip && React.createElement('button', { onClick: onSkip, style: { flex: 1, padding: "8px 0", borderRadius: 8, fontSize: 12, cursor: "pointer", border: "1px solid " + T.border, background: "transparent", color: T.textMuted },}, "Skip for now")
+          , React.createElement('button', { onClick: onClose, style: { flex: 1, padding: "8px 0", borderRadius: 8, fontSize: 12, cursor: "pointer", border: "1px solid " + T.border, background: "transparent", color: T.textMuted },}, "Close")
+        )
+      )
+    )
+  );
+}
+
+// ─── CLOUD SYNC STATUS INDICATOR ─────────────────────────────────────────────
+function CloudSyncBadge({ T = THEMES.original }) {
+  const [status, setStatus] = useState("idle");
+  const [user, setUser] = useState(null);
+
+  useEffect(() => {
+    if (!CLOUD_ENABLED) return;
+    const unsubSync = CloudStorage.onSyncChange(s => setStatus(s));
+    const unsubAuth = CloudStorage.onAuthChange(u => setUser(u));
+    return () => { unsubSync(); unsubAuth(); };
+  }, []);
+
+  if (!CLOUD_ENABLED) return null;
+
+  const statusConfig = {
+    idle: { icon: "☁️", color: T.textMuted, label: "" },
+    syncing: { icon: "🔄", color: ACCENT, label: "Syncing..." },
+    synced: { icon: "☁️", color: "#52c41a", label: "Saved" },
+    error: { icon: "⚠️", color: DANGER, label: "Sync error" },
+    offline: { icon: "📴", color: ACCENT_ORANGE, label: "Offline" },
+  };
+  const cfg = statusConfig[status] || statusConfig.idle;
+  const userName = user ? (user.displayName || user.email || "Anonymous") : null;
+
+  return React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 4, fontSize: 10 },}
+    , React.createElement('span', { style: { fontSize: 12 } }, cfg.icon)
+    , cfg.label && React.createElement('span', { style: { color: cfg.color, fontWeight: 600 } }, cfg.label)
+    , userName && React.createElement('span', { style: { color: T.textMuted, fontSize: 9 } }, userName.split("@")[0])
+  );
+}
+
+// ─── MATCH HISTORY MODAL (UPGRADED) ──────────────────────────────────────────
 function MatchHistoryModal({ onLoad, onClose, T = THEMES.original }) {
   const [matches, setMatches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [deleting, setDeleting] = useState(null);
 
-  useEffect(() => {
-    if (!CLOUD_ENABLED) {
-      // Load from localStorage history instead
+  const loadMatches = () => {
+    setLoading(true);
+    if (CLOUD_ENABLED && CloudStorage.getUser()) {
+      CloudStorage.listMatches().then(cloudMatches => {
+        // Merge with local history
+        let local = [];
+        try {
+          const raw = localStorage.getItem("tennistag_history");
+          local = raw ? JSON.parse(raw) : [];
+        } catch(e) {}
+        // Deduplicate by setup.date + player names
+        const seen = new Set(cloudMatches.map(m => (m.setup || {}).date + (m.setup || {}).player1));
+        const merged = [...cloudMatches];
+        local.forEach(m => {
+          const key = (m.setup || {}).date + (m.setup || {}).player1;
+          if (!seen.has(key)) { merged.push({ ...m, source: "local" }); seen.add(key); }
+        });
+        setMatches(merged);
+        setLoading(false);
+      }).catch(e => {
+        setError("Failed to load from cloud. Showing local matches.");
+        try {
+          const raw = localStorage.getItem("tennistag_history");
+          setMatches(raw ? JSON.parse(raw) : []);
+        } catch(e2) { setMatches([]); }
+        setLoading(false);
+      });
+    } else {
       try {
         const raw = localStorage.getItem("tennistag_history");
         setMatches(raw ? JSON.parse(raw) : []);
       } catch(e) { setMatches([]); }
       setLoading(false);
-      return;
     }
-    CloudStorage.listMatches().then(m => {
-      setMatches(m);
-      setLoading(false);
-    }).catch(e => {
-      setError("Failed to load matches");
-      setLoading(false);
-    });
-  }, []);
+  };
+
+  useEffect(() => { loadMatches(); }, []);
+
+  const handleDelete = async (matchId, index) => {
+    if (!window.confirm("Delete this match permanently?")) return;
+    setDeleting(index);
+    if (CLOUD_ENABLED && CloudStorage.getUser() && matchId && !matchId.startsWith("match_")) {
+      await CloudStorage.deleteMatch(matchId);
+    }
+    // Also remove from local history
+    try {
+      const raw = localStorage.getItem("tennistag_history");
+      const history = raw ? JSON.parse(raw) : [];
+      const filtered = history.filter(m => m.id !== matchId);
+      localStorage.setItem("tennistag_history", JSON.stringify(filtered));
+    } catch(e) {}
+    setDeleting(null);
+    loadMatches();
+  };
 
   return (
     React.createElement('div', { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.88)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },}
-      , React.createElement('div', { style: { background: T.card, borderRadius: 16, padding: 24, maxWidth: 560, width: "100%", maxHeight: "85vh", display: "flex", flexDirection: "column", border: "2px solid " + T.accent, boxShadow: "0 20px 60px rgba(0,0,0,0.8)" },}
+      , React.createElement('div', { style: { background: T.card, borderRadius: 16, padding: 24, maxWidth: 600, width: "100%", maxHeight: "85vh", display: "flex", flexDirection: "column", border: "2px solid " + T.accent, boxShadow: "0 20px 60px rgba(0,0,0,0.8)" },}
         , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexShrink: 0 },}
-          , React.createElement('div', { style: { fontSize: 18, fontWeight: 900, color: T.text, fontFamily: T.fontDisplay },}, "📂 Match History")
+          , React.createElement('div', null
+            , React.createElement('div', { style: { fontSize: 18, fontWeight: 900, color: T.text, fontFamily: T.fontDisplay },}, "📂 Match History")
+            , React.createElement('div', { style: { fontSize: 10, color: T.textMuted, marginTop: 2 },}
+              , CLOUD_ENABLED && CloudStorage.getUser() ? "☁️ Cloud synced · " + matches.length + " matches" : "💾 Local storage · " + matches.length + " matches"
+            )
+          )
           , React.createElement('button', { onClick: onClose, style: { background: "transparent", border: "1px solid " + T.border, color: T.textMuted, borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 14 },}, "✕")
         )
+        , error && (
+          React.createElement('div', { style: { fontSize: 11, color: ACCENT_ORANGE, marginBottom: 10, padding: "6px 10px", borderRadius: 6, background: ACCENT_ORANGE + "15" },}, error)
+        )
         , loading ? (
-          React.createElement('div', { style: { textAlign: "center", padding: 40, color: T.textMuted },}, "Loading...")
-        ) : error ? (
-          React.createElement('div', { style: { textAlign: "center", padding: 40, color: DANGER },}, error)
+          React.createElement('div', { style: { textAlign: "center", padding: 40, color: T.textMuted },}, "Loading matches...")
         ) : matches.length === 0 ? (
           React.createElement('div', { style: { textAlign: "center", padding: 40, color: T.textMuted, fontSize: 13 },}
             , "No saved matches yet."
             , React.createElement('br', null)
-            , CLOUD_ENABLED ? "Matches saved to cloud will appear here." : "Complete and export a match to save it to history."
+            , "Complete a match to save it here."
           )
         ) : (
           React.createElement('div', { style: { flex: 1, overflowY: "auto" },}
-            , matches.map(m => {
+            , matches.map((m, idx) => {
               const su = m.setup || {};
-              return React.createElement('div', { key: m.id || m.savedAt, style: { padding: "10px 14px", borderRadius: 8, border: "1px solid " + T.border, marginBottom: 8, cursor: "pointer", background: T.card2, transition: "all 0.15s" },
-                onClick: () => onLoad(m),}
-                , React.createElement('div', { style: { fontWeight: 800, fontSize: 13, color: T.text },}, su.player1 || "?", " vs ", su.player2 || "?")
-                , React.createElement('div', { style: { fontSize: 11, color: T.textMuted, marginTop: 2 },}
-                  , su.surface || "", " · ", su.date || "", su.tournament ? " · " + su.tournament : ""
-                  , " · ", m.pointCount || 0, " pts"
-                  , m.matchComplete ? React.createElement('span', { style: { color: "#52c41a", fontWeight: 700, marginLeft: 6 },}, "✓ Complete") : ""
+              const isCloud = m.source !== "local" && CLOUD_ENABLED;
+              return React.createElement('div', { key: m.id || idx, style: { padding: "10px 14px", borderRadius: 8, border: "1px solid " + T.border, marginBottom: 8, background: T.card2, display: "flex", alignItems: "center", gap: 10 },}
+                , React.createElement('div', { style: { flex: 1, cursor: "pointer" }, onClick: () => onLoad(m),}
+                  , React.createElement('div', { style: { fontWeight: 800, fontSize: 13, color: T.text },}, su.player1 || "?", " vs ", su.player2 || "?")
+                  , React.createElement('div', { style: { fontSize: 11, color: T.textMuted, marginTop: 2, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" },}
+                    , React.createElement('span', null, su.surface || "")
+                    , React.createElement('span', null, "·")
+                    , React.createElement('span', null, su.date || "")
+                    , su.tournament && React.createElement('span', null, "· " + su.tournament)
+                    , React.createElement('span', null, "· " + (m.pointCount || 0) + " pts")
+                    , isCloud && React.createElement('span', { style: { fontSize: 9, color: "#52c41a" },}, "☁️")
+                    , m.matchComplete && React.createElement('span', { style: { color: "#52c41a", fontWeight: 700, fontSize: 10 },}, "✓ Complete")
+                  )
+                )
+                , React.createElement('button', { onClick: () => handleDelete(m.id, idx), disabled: deleting === idx,
+                  style: { padding: "4px 8px", borderRadius: 5, fontSize: 11, cursor: "pointer",
+                    border: "1px solid " + DANGER + "40", background: "transparent", color: DANGER + "80",
+                    opacity: deleting === idx ? 0.3 : 1 },}
+                  , deleting === idx ? "..." : "🗑"
                 )
               );
             })
@@ -2806,6 +3188,188 @@ function StatsScreen({ points, setup, score, matchTime }) {
   );
 }
 
+// ─── VOICE TAGGING ENGINE ─────────────────────────────────────────────────────
+// Uses Web Speech API (webkitSpeechRecognition) for hands-free courtside tagging.
+// Supported on iPad Safari (requires internet for speech processing).
+const VoiceEngine = {
+  _recognition: null,
+  _active: false,
+  _onCommand: null,
+  _onStatus: null,
+
+  isSupported: function() {
+    return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+  },
+
+  start: function(onCommand, onStatus) {
+    if (!this.isSupported()) {
+      if (onStatus) onStatus("unsupported");
+      return false;
+    }
+    if (this._active) return true;
+
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    this._recognition = new SR();
+    this._recognition.continuous = true;
+    this._recognition.interimResults = false;
+    this._recognition.lang = "en-US";
+    this._recognition.maxAlternatives = 3;
+    this._onCommand = onCommand;
+    this._onStatus = onStatus;
+
+    this._recognition.onresult = (event) => {
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          const raw = event.results[i][0].transcript.trim().toLowerCase();
+          const confidence = event.results[i][0].confidence;
+          console.log("🎤 Heard:", raw, "(" + Math.round(confidence * 100) + "%)");
+          const cmd = this._parseCommand(raw);
+          if (cmd && this._onCommand) {
+            this._onCommand(cmd, raw, confidence);
+          }
+        }
+      }
+    };
+
+    this._recognition.onerror = (event) => {
+      console.warn("🎤 Error:", event.error);
+      if (event.error === "not-allowed") {
+        if (this._onStatus) this._onStatus("denied");
+        this._active = false;
+      } else if (event.error === "network") {
+        if (this._onStatus) this._onStatus("offline");
+      }
+    };
+
+    this._recognition.onend = () => {
+      // Auto-restart if still active (speech recognition stops after silence)
+      if (this._active) {
+        try { this._recognition.start(); } catch(e) {}
+      }
+    };
+
+    try {
+      this._recognition.start();
+      this._active = true;
+      if (onStatus) onStatus("listening");
+      return true;
+    } catch(e) {
+      console.error("🎤 Start failed:", e);
+      if (onStatus) onStatus("error");
+      return false;
+    }
+  },
+
+  stop: function() {
+    this._active = false;
+    if (this._recognition) {
+      try { this._recognition.stop(); } catch(e) {}
+    }
+    if (this._onStatus) this._onStatus("stopped");
+  },
+
+  // ── Parse spoken words into structured commands ──
+  _parseCommand: function(raw) {
+    // Normalize common speech-to-text variations
+    const text = raw
+      .replace(/1st/g, "first").replace(/2nd/g, "second")
+      .replace(/double fault/g, "doublefault")
+      .replace(/unforced error/g, "unforcederror")
+      .replace(/forced error/g, "forcederror")
+      .replace(/return error/g, "returnerror")
+      .replace(/return winner/g, "returnwinner")
+      .replace(/drop shot/g, "dropshot")
+      .replace(/down the line/g, "downtheline")
+      .replace(/cross court/g, "crosscourt")
+      .replace(/cross-court/g, "crosscourt");
+
+    const words = text.split(/\s+/);
+    const has = (w) => words.some(x => x.includes(w));
+
+    // ── Quick outcomes (highest priority) ──
+    if (has("ace") || has("aces")) return { action: "quickTag", outcome: "Ace" };
+    if (has("doublefault") || (has("double") && has("fault"))) return { action: "quickTag", outcome: "Double Fault" };
+    if (has("returnerror") || (has("return") && has("error"))) return { action: "quickTag", outcome: "Return Error" };
+    if (has("returnwinner") || (has("return") && has("winner"))) return { action: "quickTag", outcome: "Return Winner" };
+    if (has("let")) return { action: "let" };
+
+    // ── Fault ──
+    if (has("fault") && !has("double") && !has("foot")) return { action: "fault" };
+    if (has("foot") && has("fault")) return { action: "faultType", type: "Foot Fault" };
+
+    // ── Serve type ──
+    if (has("first") && has("serve")) return { action: "setServe", type: "1st Serve" };
+    if (has("second") && has("serve")) return { action: "setServe", type: "2nd Serve" };
+
+    // ── Outcomes ──
+    if (has("winner")) return { action: "setOutcome", outcome: "Winner" };
+    if (has("unforcederror") || (has("unforced"))) return { action: "setOutcome", outcome: "Unforced Error" };
+    if (has("forcederror") || (has("forced") && has("error"))) return { action: "setOutcome", outcome: "Forced Error" };
+
+    // ── Serve spin ──
+    if (has("flat")) return { action: "setSpin", spin: "Flat" };
+    if (has("slice")) return { action: "setSpin", spin: "Slice" };
+    if (has("kick")) return { action: "setSpin", spin: "Kick" };
+
+    // ── Serve zone ──
+    if (has("wide") && has("deep")) return { action: "setZone", zone: "Wide-Deep" };
+    if (has("body") && has("deep")) return { action: "setZone", zone: "Body-Deep" };
+    if (has("tee") || (has("t") && has("deep"))) return { action: "setZone", zone: "T-Deep" };
+    if (has("wide") && has("short")) return { action: "setZone", zone: "Wide-Short" };
+    if (has("wide")) return { action: "setZone", zone: "Wide-Deep" };
+    if (has("body")) return { action: "setZone", zone: "Body-Deep" };
+    if (has("tee") || text === "t") return { action: "setZone", zone: "T-Deep" };
+
+    // ── Shot types ──
+    if (has("forehand")) return { action: "setShot", shot: "Forehand" };
+    if (has("backhand")) return { action: "setShot", shot: "Backhand" };
+    if (has("volley")) return { action: "setShot", shot: "Volley" };
+    if (has("overhead") || has("smash")) return { action: "setShot", shot: "Overhead" };
+    if (has("dropshot")) return { action: "setShot", shot: "Drop Shot" };
+
+    // ── Error direction ──
+    if (has("net") && (has("into") || has("in"))) return { action: "setErrorDir", dir: "Net" };
+    if (has("long") || has("out") && has("long")) return { action: "setErrorDir", dir: "Long" };
+
+    // ── Rally length ──
+    if (has("short") && has("rally")) return { action: "setRally", rally: "0-4" };
+    if (has("medium") && has("rally")) return { action: "setRally", rally: "5-8" };
+    if (has("long") && has("rally")) return { action: "setRally", rally: "9-12" };
+
+    // ── Point winner ──
+    if (has("player") && has("one") || has("server") && has("wins")) return { action: "setWinner", winner: "server" };
+    if (has("player") && has("two") || has("returner") && has("wins")) return { action: "setWinner", winner: "returner" };
+
+    // ── Controls ──
+    if (has("undo")) return { action: "undo" };
+    if (has("log") || has("lock") || has("confirm")) return { action: "log" };
+    if (has("flip")) return { action: "flip" };
+
+    return null; // unrecognized
+  },
+};
+
+// ── Voice status indicator component ──
+function VoiceBadge({ active, lastCmd, onToggle, T }) {
+  return React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 5, flexShrink: 0 },}
+    , React.createElement('button', { onClick: onToggle, style: {
+      padding: "5px 10px", borderRadius: T.chipRadius || 8, fontSize: 11, fontWeight: 700,
+      cursor: "pointer", transition: "all 0.2s",
+      border: "1.5px solid " + (active ? "#52c41a" : T.border),
+      background: active ? "#52c41a20" : "transparent",
+      color: active ? "#52c41a" : T.textMuted,
+      animation: active ? "pulse 1s ease-in-out infinite alternate" : "none",
+    },}
+      , active ? "🎤 Listening" : "🎤 Voice"
+    )
+    , lastCmd && React.createElement('span', { style: {
+      fontSize: 9, color: "#52c41a", fontWeight: 600, padding: "2px 6px",
+      borderRadius: 4, background: "#52c41a15", border: "1px solid #52c41a30",
+      maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+    },}, "✓ " + lastCmd)
+  );
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 function App() {
   const [setup, setSetup] = useState(null);
@@ -2823,11 +3387,32 @@ function App() {
   const [showOverwrite, setShowOverwrite] = useState(false);
   const [logFlash, setLogFlash] = useState(false);
   const [courtFlipped, setCourtFlipped] = useState(false);
+  const [tagFullWidth, setTagFullWidth] = useState(false);
+  const [voiceActive, setVoiceActive] = useState(false);
+  const [voiceLastCmd, setVoiceLastCmd] = useState(null);
   const handleFlipCourt = () => {
     setCourtFlipped(f => !f);
   };
 
   const canTriggerSuperTie = (fmt) => ["Best of 3","Best of 3 Short Sets"].includes(fmt);
+
+  // ── CLOUD STORAGE STATE ────────────────────────────────────────
+  const [cloudUser, setCloudUser] = useState(null);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [cloudReady, setCloudReady] = useState(false);
+
+  // Initialize cloud on mount
+  useEffect(() => {
+    if (!CLOUD_ENABLED) return;
+    CloudStorage.init().then(ok => {
+      setCloudReady(ok);
+      if (ok) {
+        CloudStorage.onAuthChange(user => {
+          setCloudUser(user);
+        });
+      }
+    });
+  }, []);
 
   // ── TAG PANEL SCROLL REF ─────────────────────────────────────────
   const tagPanelRef = useRef(null);
@@ -2892,9 +3477,16 @@ function App() {
       saveSession(points, score, setup, matchTime, conditions, themeId, {
         superTieAt11, courtFlipped, currentTag: tag,
       });
+      // Cloud auto-save (if authenticated)
+      if (CLOUD_ENABLED && cloudUser) {
+        const sessionKey = setup.player1.replace(/[^a-zA-Z0-9]/g,"") + "_" + setup.date;
+        CloudStorage.autoSave(sessionKey, {
+          setup, points, score, matchTime, conditions, themeId,
+        });
+      }
     }, 2000); // debounce: save every 2 seconds max
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
-  }, [points, score, matchTime, conditions, themeId, setup, superTieAt11, courtFlipped, tag]);
+  }, [points, score, matchTime, conditions, themeId, setup, superTieAt11, courtFlipped, tag, cloudUser]);
 
   const handleStart = (form) => {
     localStorage.removeItem("tennistag_session");
@@ -3149,6 +3741,97 @@ function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [setup, tab, tag, score, points]);
 
+  // ── VOICE COMMAND HANDLER ────────────────────────────────────────
+  const handleVoiceToggle = () => {
+    if (voiceActive) {
+      VoiceEngine.stop();
+      setVoiceActive(false);
+      setVoiceLastCmd(null);
+    } else {
+      const ok = VoiceEngine.start((cmd, raw, confidence) => {
+        // Process voice command
+        setVoiceLastCmd(raw.slice(0, 20));
+        setTimeout(() => setVoiceLastCmd(null), 3000);
+
+        const srv = score ? score.server : "p1";
+        const returner = srv === "p1" ? "p2" : "p1";
+
+        switch (cmd.action) {
+          case "quickTag":
+            setTag(prev => ({
+              ...EMPTY_TAG,
+              serveType: prev.serveType || "1st Serve",
+              outcome: cmd.outcome,
+              pointWinner: (cmd.outcome === "Ace" || cmd.outcome === "Return Error") ? srv : returner,
+              rallyLength: "0-4",
+              serveSpin: prev.serveSpin,
+              serveZone: prev.serveZone,
+            }));
+            // Auto-log after a brief delay for confirmation flash
+            if (navigator.vibrate) navigator.vibrate([50, 50, 50]);
+            setTimeout(() => handleLog(), 300);
+            break;
+          case "let":
+            setTag(prev => ({ ...EMPTY_TAG, serveType: prev.serveType || "1st Serve" }));
+            break;
+          case "fault":
+            setTag(prev => ({ ...prev, serveType: prev.serveType || "1st Serve", serveFault: "?" }));
+            break;
+          case "faultType":
+            setTag(prev => ({ ...prev, serveFault: cmd.type }));
+            break;
+          case "setServe":
+            setTag(prev => ({ ...prev, serveType: cmd.type }));
+            break;
+          case "setOutcome":
+            setTag(prev => ({ ...prev, outcome: cmd.outcome }));
+            break;
+          case "setSpin":
+            setTag(prev => ({ ...prev, serveSpin: cmd.spin }));
+            break;
+          case "setZone":
+            setTag(prev => ({ ...prev, serveZone: cmd.zone }));
+            break;
+          case "setShot":
+            // Context-aware: if outcome is error, set errorShot; if winner, set shotType
+            setTag(prev => {
+              if (prev.outcome === "Unforced Error" || prev.outcome === "Forced Error" || prev.outcome === "Return Error") {
+                return { ...prev, errorShot: cmd.shot };
+              }
+              return { ...prev, shotType: cmd.shot };
+            });
+            break;
+          case "setErrorDir":
+            setTag(prev => ({ ...prev, errorDirection: cmd.dir }));
+            break;
+          case "setRally":
+            setTag(prev => ({ ...prev, rallyLength: cmd.rally }));
+            break;
+          case "setWinner":
+            setTag(prev => ({ ...prev, pointWinner: cmd.winner === "server" ? srv : returner }));
+            break;
+          case "undo":
+            handleUndo();
+            break;
+          case "log":
+            handleLog();
+            break;
+          case "flip":
+            setCourtFlipped(f => !f);
+            break;
+        }
+      }, (status) => {
+        if (status === "denied") {
+          setVoiceActive(false);
+          alert("Microphone access denied. Please allow microphone access in your browser settings.");
+        } else if (status === "unsupported") {
+          alert("Voice recognition is not supported in this browser. Use Safari on iPad or Chrome on desktop.");
+        }
+      });
+      setVoiceActive(ok);
+    }
+  };
+
   // Derived theme styles applied inline to root
   const tApp = {
     fontFamily: T.fontBody,
@@ -3179,6 +3862,15 @@ function App() {
       , showRestore && savedSession && (
         React.createElement(RestoreModal, { session: savedSession, onRestore: restoreSession, onDiscard: discardSession,} )
       )
+      /* Auth modal */
+      , showAuthModal && (
+        React.createElement(CloudAuthModal, {
+          onAuth: (user) => { setCloudUser(user); setShowAuthModal(false); },
+          onClose: () => setShowAuthModal(false),
+          onSkip: () => setShowAuthModal(false),
+          T: T,}
+        )
+      )
       /* Match history modal */
       , showHistory && (
         React.createElement(MatchHistoryModal, {
@@ -3203,6 +3895,19 @@ function App() {
           , T.prefix || "", "TennisTag Pro"
         )
         , React.createElement('div', { style: { display: "flex", gap: 8, alignItems: "center" },}
+          , React.createElement(CloudSyncBadge, { T: T,})
+          , CLOUD_ENABLED && !cloudUser && (
+            React.createElement('button', { onClick: () => setShowAuthModal(true), style: {
+              padding: "5px 12px", borderRadius: T.chipRadius || 8, fontSize: 11, fontWeight: 700,
+              cursor: "pointer", border: "1px solid " + T.accent, background: T.accent + "15",
+              color: T.accent, fontFamily: T.fontBody },}, "☁️ Sign In")
+          )
+          , CLOUD_ENABLED && cloudUser && (
+            React.createElement('button', { onClick: () => CloudStorage.signOut(), style: {
+              padding: "5px 10px", borderRadius: T.chipRadius || 8, fontSize: 10, fontWeight: 600,
+              cursor: "pointer", border: "1px solid " + T.border, background: "transparent",
+              color: T.textMuted, fontFamily: T.fontBody },}, "Sign Out")
+          )
           , React.createElement('button', { onClick: () => setShowHistory(true), style: {
             padding: "5px 12px", borderRadius: T.chipRadius || 8, fontSize: 11, fontWeight: 700,
             cursor: "pointer", border: "1px solid " + T.border, background: T.card2,
@@ -3229,6 +3934,7 @@ function App() {
           , React.createElement('span', { style: { fontSize: 11, color: T.textMuted },}, setup.format)
           /* Compact theme switcher */
           , React.createElement(ThemeSelector, { current: themeId, onSelect: setThemeId, compact: true,} )
+          , React.createElement(CloudSyncBadge, { T: T,})
           , !matchTime.end && (
             React.createElement(React.Fragment, null
               , React.createElement('button', {
@@ -3315,10 +4021,19 @@ function App() {
 
         , tab === "tag" && (
           React.createElement(React.Fragment, null
-            , React.createElement('div', { ref: tagPanelRef, style: { width: 520, background: CARD, borderRight: `1px solid #1e3a5f`, display: "flex", flexDirection: "column", overflowY: "auto", flexShrink: 0 },}
+            , React.createElement('div', { ref: tagPanelRef, style: { width: tagFullWidth ? "100%" : 520, background: CARD, borderRight: tagFullWidth ? "none" : `1px solid #1e3a5f`, display: "flex", flexDirection: "column", overflowY: "auto", flexShrink: tagFullWidth ? 1 : 0, flex: tagFullWidth ? 1 : "none" },}
+              /* Full-width toggle + Voice badge bar */
+              , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 12px", background: T.bgDeep, borderBottom: "1px solid " + T.border, flexShrink: 0 },}
+                , React.createElement(VoiceBadge, { active: voiceActive, lastCmd: voiceLastCmd, onToggle: handleVoiceToggle, T: T,})
+                , React.createElement('button', { onClick: () => setTagFullWidth(f => !f), style: {
+                  padding: "4px 10px", borderRadius: T.chipRadius || 6, fontSize: 10, fontWeight: 700,
+                  cursor: "pointer", border: "1px solid " + T.border, background: tagFullWidth ? T.accent + "20" : "transparent",
+                  color: tagFullWidth ? T.accent : T.textMuted,
+                },}, tagFullWidth ? "◱ Split View" : "◳ Full Width")
+              )
               , React.createElement(TagPanel, { setup: setup, score: score, tag: tag, setTag: setTag, onLog: handleLog, onUndo: handleUndo, onRedo: handleRedo, onEditLast: handleEditLast, undoPending: undoPending, undoStack: undoStack, points: points, T: T, courtFlipped: courtFlipped, onFlipCourt: handleFlipCourt,} )
             )
-            , React.createElement('div', { style: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },}
+            , !tagFullWidth && React.createElement('div', { style: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },}
               , React.createElement('div', { style: { padding: "7px 10px", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 },}
                 , React.createElement('span', { style: { ...s.sectionLabel, marginBottom: 0 },}, "Recent Points" )
               )
