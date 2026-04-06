@@ -2450,7 +2450,7 @@ function StepHeader({ num, label, color = "#5abaff", fontFamily, large = false }
   );
 }
 
-function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast, undoPending, undoStack, points, T = THEMES.original, courtFlipped = false, onFlipCourt, fullWidth = false, outdoorMode = false }) {
+function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast, undoPending, undoStack, points, T = THEMES.original, courtFlipped = false, onFlipCourt, fullWidth = false, outdoorMode = false, onServerSwap }) {
   const { player1, player2 } = setup;
   const { server } = score;
   const setT = (k, v) => setTag(p => ({ ...p, [k]: v }));
@@ -2550,12 +2550,17 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast
         )
         , React.createElement('div', { style: { display: "flex", gap: fw ? 10 : 6 },}
           , [{ pid: "p1", name: player1 }, { pid: "p2", name: player2 }].map(({ pid, name }) => (
-            React.createElement('div', { key: pid, style: {
+            React.createElement('button', { key: pid, onClick: () => {
+              // Allow manual server swap
+              if (typeof onServerSwap === "function") onServerSwap(pid);
+            }, style: {
               padding: fw ? "10px 16px" : "6px 11px", borderRadius: T.chipRadius, fontSize: fw ? 17 : 13, fontWeight: 700,
-              border: (fw ? "3px" : "2px") + " solid " + (server === pid ? (pid === "p1" ? P1C : P2C) : T.border),
-              background: server === pid ? (pid === "p1" ? P1BG : P2BG) : "transparent",
-              color: server === pid ? (pid === "p1" ? P1C : P2C) : T.textMuted,
+              cursor: "pointer",
+              border: (fw ? "3px" : "2px") + " solid " + (server === pid ? (pid === "p1" ? P1C : P2C) : (od ? "#aaa" : T.border)),
+              background: server === pid ? (pid === "p1" ? P1BG : P2BG) : (od ? "#e8ede8" : "transparent"),
+              color: server === pid ? (pid === "p1" ? P1C : P2C) : (od ? "#333" : T.textMuted),
               flex: 1, textAlign: "center", fontFamily: T.fontDisplay,
+              transition: "all 0.15s",
             },}
               , server === pid ? (T.prefix || "🎾 ") : "", name
             )
@@ -3319,8 +3324,21 @@ const VoiceEngine = {
 
     this._recognition.onend = () => {
       // Auto-restart if still active (speech recognition stops after silence)
+      // Throttle: don't restart more than once per second to prevent freeze loops
       if (this._active) {
-        try { this._recognition.start(); } catch(e) {}
+        const now = Date.now();
+        if (this._lastRestart && now - this._lastRestart < 1000) {
+          // Too fast — wait before retrying
+          setTimeout(() => {
+            if (this._active) {
+              this._lastRestart = Date.now();
+              try { this._recognition.start(); } catch(e) {}
+            }
+          }, 1500);
+        } else {
+          this._lastRestart = now;
+          try { this._recognition.start(); } catch(e) {}
+        }
       }
     };
 
@@ -3592,17 +3610,33 @@ function App() {
     if (!setup) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
-      saveSession(points, score, setup, matchTime, conditions, themeId, {
-        superTieAt11, courtFlipped, currentTag: tag,
-      });
+      try {
+        // Check localStorage usage before saving (prevent quota exceeded freeze)
+        const data = JSON.stringify({
+          points: points, score: score, setup: setup,
+          matchTime: matchTime, conditions: conditions, themeId: themeId,
+          superTieAt11: superTieAt11, courtFlipped: courtFlipped,
+          currentTag: tag, savedAt: Date.now(),
+        });
+        // Only save if under 4MB (localStorage limit is ~5MB)
+        if (data.length < 4000000) {
+          localStorage.setItem(SAVE_KEY, data);
+        } else {
+          console.warn("⚠️ Session too large for localStorage (" + Math.round(data.length/1024) + "KB), skipping save");
+        }
+      } catch(e) {
+        console.warn("⚠️ Save failed:", e.message);
+      }
       // Cloud auto-save (if authenticated)
       if (CLOUD_ENABLED && cloudUser) {
-        const sessionKey = setup.player1.replace(/[^a-zA-Z0-9]/g,"") + "_" + setup.date;
-        CloudStorage.autoSave(sessionKey, {
-          setup, points, score, matchTime, conditions, themeId,
-        });
+        try {
+          const sessionKey = setup.player1.replace(/[^a-zA-Z0-9]/g,"") + "_" + setup.date;
+          CloudStorage.autoSave(sessionKey, {
+            setup, points, score, matchTime, conditions, themeId,
+          });
+        } catch(e) { console.warn("☁️ Cloud auto-save failed:", e); }
       }
-    }, 2000); // debounce: save every 2 seconds max
+    }, 3000); // debounce: save every 3 seconds max (increased from 2s for stability)
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
   }, [points, score, matchTime, conditions, themeId, setup, superTieAt11, courtFlipped, tag, cloudUser]);
 
@@ -3620,6 +3654,7 @@ function App() {
   };
 
   const handleLog = () => {
+    try {
     // Compute resolved values (auto-fills for ace/df/return outcomes)
     const srv = score.server;
     const isAutoOutcome = tag.outcome === "Ace" || tag.outcome === "Double Fault" || tag.outcome === "Return Error" || tag.outcome === "Return Winner";
@@ -3688,6 +3723,11 @@ function App() {
     setTimeout(() => setLogFlash(false), 400);
     // Auto-scroll tag panel back to top
     if (tagPanelRef.current) tagPanelRef.current.scrollTop = 0;
+    } catch(e) {
+      console.error("⚠️ Log point error:", e);
+      // Don't freeze — show error but keep going
+      alert("Error logging point: " + e.message + "\n\nYour data is safe. Try again.");
+    }
   };
 
   const handleSuperTieDecision = (useSuperTie) => {
@@ -3765,6 +3805,11 @@ function App() {
   const handleOverwriteApply = (correctedScore) => {
     setScore(correctedScore);
     setShowOverwrite(false);
+  };
+
+  const handleServerSwap = (newServer) => {
+    if (!score || score.matchWinner) return;
+    setScore(prev => ({ ...prev, server: newServer }));
   };
 
   const [showEndConfirm, setShowEndConfirm] = useState(false);
@@ -4199,7 +4244,7 @@ function App() {
                   },}, tagFullWidth ? "◱ Split" : "◳ Full")
                 )
               )
-              , React.createElement(TagPanel, { setup: setup, score: score, tag: tag, setTag: setTag, onLog: handleLog, onUndo: handleUndo, onRedo: handleRedo, onEditLast: handleEditLast, undoPending: undoPending, undoStack: undoStack, points: points, T: T, courtFlipped: courtFlipped, onFlipCourt: handleFlipCourt, fullWidth: tagFullWidth, outdoorMode: outdoorMode,} )
+              , React.createElement(TagPanel, { setup: setup, score: score, tag: tag, setTag: setTag, onLog: handleLog, onUndo: handleUndo, onRedo: handleRedo, onEditLast: handleEditLast, undoPending: undoPending, undoStack: undoStack, points: points, T: T, courtFlipped: courtFlipped, onFlipCourt: handleFlipCourt, fullWidth: tagFullWidth, outdoorMode: outdoorMode, onServerSwap: handleServerSwap,} )
             )
             , !tagFullWidth && React.createElement('div', { style: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },}
               , React.createElement('div', { style: { padding: "7px 10px", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 },}
