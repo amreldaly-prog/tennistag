@@ -196,7 +196,6 @@ const THEME_LIST = Object.values(THEMES);
 // 7. Create Firestore Database (Cloud Firestore → Create database → Start in test mode)
 // 8. Set CLOUD_ENABLED = true below
 // 9. Deploy Firestore security rules (see FIRESTORE_RULES below)
-const ACCENT_ORANGE = "#e07b54";
 //
 const CLOUD_ENABLED = false; // ← Set to true after Firebase is configured
 const FIREBASE_CONFIG = {
@@ -845,6 +844,7 @@ const COURT_LIGHT = "#40916c";
 const ACCENT = "#f4d35e";   // kept for UI accents (not player colours)
 const DANGER = "#e63946";
 const ORANGE = "#e07b54";   // kept for general use
+const ACCENT_ORANGE = "#e07b54"; // alias used in cloud sync badge & history modal
 const BG = "#0d1b2a";
 const CARD = "#112233";
 const CARD2 = "#1a2f45";
@@ -3270,6 +3270,1040 @@ function StatsScreen({ points, setup, score, matchTime }) {
   );
 }
 
+// ─── AUDIO STORAGE (IndexedDB) ────────────────────────────────────────────────
+// Stores match recordings locally for review before Whisper upload
+const AudioStorage = {
+  _db: null,
+  _dbName: "tennistag_audio",
+  _storeName: "recordings",
+
+  init: function() {
+    return new Promise((resolve, reject) => {
+      if (this._db) return resolve(this._db);
+      if (!window.indexedDB) return reject(new Error("IndexedDB not supported"));
+      const req = indexedDB.open(this._dbName, 1);
+      req.onerror = () => reject(req.error);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(this._storeName)) {
+          db.createObjectStore(this._storeName, { keyPath: "id" });
+        }
+      };
+      req.onsuccess = () => { this._db = req.result; resolve(this._db); };
+    });
+  },
+
+  save: async function(recording) {
+    await this.init();
+    return new Promise((resolve, reject) => {
+      const tx = this._db.transaction(this._storeName, "readwrite");
+      const store = tx.objectStore(this._storeName);
+      const req = store.put(recording);
+      req.onsuccess = () => resolve(recording.id);
+      req.onerror = () => reject(req.error);
+    });
+  },
+
+  list: async function() {
+    await this.init();
+    return new Promise((resolve, reject) => {
+      const tx = this._db.transaction(this._storeName, "readonly");
+      const store = tx.objectStore(this._storeName);
+      const req = store.getAll();
+      req.onsuccess = () => {
+        // Return metadata only (no blobs) — sorted newest first
+        const list = req.result.map(r => ({
+          id: r.id, name: r.name, duration: r.duration,
+          markers: r.markers || [], savedAt: r.savedAt, size: r.blob ? r.blob.size : 0,
+        })).sort((a, b) => b.savedAt - a.savedAt);
+        resolve(list);
+      };
+      req.onerror = () => reject(req.error);
+    });
+  },
+
+  get: async function(id) {
+    await this.init();
+    return new Promise((resolve, reject) => {
+      const tx = this._db.transaction(this._storeName, "readonly");
+      const req = tx.objectStore(this._storeName).get(id);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  },
+
+  delete: async function(id) {
+    await this.init();
+    return new Promise((resolve, reject) => {
+      const tx = this._db.transaction(this._storeName, "readwrite");
+      const req = tx.objectStore(this._storeName).delete(id);
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => reject(req.error);
+    });
+  },
+};
+
+// ─── AUDIO RECORDER ENGINE ────────────────────────────────────────────────────
+const AudioRecorder = {
+  _mediaRecorder: null,
+  _chunks: [],
+  _stream: null,
+  _startTime: 0,
+  _pausedDuration: 0,
+  _pausedAt: 0,
+  _markers: [],
+  _analyser: null,
+  _audioCtx: null,
+
+  isSupported: function() {
+    return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+  },
+
+  start: async function(onStatus) {
+    if (!this.isSupported()) { onStatus && onStatus("unsupported"); return false; }
+    try {
+      this._stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 44100 }
+      });
+      // Set up analyser for waveform
+      this._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = this._audioCtx.createMediaStreamSource(this._stream);
+      this._analyser = this._audioCtx.createAnalyser();
+      this._analyser.fftSize = 256;
+      source.connect(this._analyser);
+      // Pick best supported format
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : "audio/webm";
+      this._mediaRecorder = new MediaRecorder(this._stream, { mimeType: mimeType, audioBitsPerSecond: 64000 });
+      this._chunks = [];
+      this._markers = [];
+      this._pausedDuration = 0;
+      this._pausedAt = 0;
+      this._mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) this._chunks.push(e.data); };
+      this._mediaRecorder.start(1000); // collect 1-sec chunks
+      this._startTime = Date.now();
+      onStatus && onStatus("recording");
+      return true;
+    } catch(e) {
+      console.error("Audio start failed:", e);
+      onStatus && onStatus(e.name === "NotAllowedError" ? "denied" : "error");
+      return false;
+    }
+  },
+
+  pause: function() {
+    if (this._mediaRecorder && this._mediaRecorder.state === "recording") {
+      this._mediaRecorder.pause();
+      this._pausedAt = Date.now();
+    }
+  },
+
+  resume: function() {
+    if (this._mediaRecorder && this._mediaRecorder.state === "paused") {
+      this._mediaRecorder.resume();
+      if (this._pausedAt) { this._pausedDuration += Date.now() - this._pausedAt; this._pausedAt = 0; }
+    }
+  },
+
+  addMarker: function(label) {
+    const elapsed = this.getElapsed();
+    const marker = { t: elapsed, label: label || "Point " + (this._markers.length + 1), ts: Date.now() };
+    this._markers.push(marker);
+    return marker;
+  },
+
+  getMarkers: function() { return [...this._markers]; },
+
+  getElapsed: function() {
+    if (!this._startTime) return 0;
+    const now = this._pausedAt || Date.now();
+    return (now - this._startTime - this._pausedDuration) / 1000;
+  },
+
+  getLevel: function() {
+    if (!this._analyser) return 0;
+    const data = new Uint8Array(this._analyser.frequencyBinCount);
+    this._analyser.getByteFrequencyData(data);
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) sum += data[i];
+    return sum / data.length / 255;
+  },
+
+  stop: function() {
+    return new Promise((resolve) => {
+      if (!this._mediaRecorder) return resolve(null);
+      const duration = this.getElapsed();
+      const markers = [...this._markers];
+      this._mediaRecorder.onstop = async () => {
+        const blob = new Blob(this._chunks, { type: this._mediaRecorder.mimeType });
+        // Stop stream
+        this._stream.getTracks().forEach(t => t.stop());
+        if (this._audioCtx) { try { this._audioCtx.close(); } catch(e) {} }
+        this._stream = null; this._mediaRecorder = null; this._chunks = []; this._analyser = null;
+        resolve({ blob: blob, duration: duration, markers: markers, mimeType: blob.type });
+      };
+      this._mediaRecorder.stop();
+    });
+  },
+
+  isRecording: function() { return !!this._mediaRecorder && this._mediaRecorder.state !== "inactive"; },
+  isPaused: function() { return !!this._mediaRecorder && this._mediaRecorder.state === "paused"; },
+};
+
+// ─── MATCH AUDIO RECORDER UI ──────────────────────────────────────────────────
+function MatchAudioRecorder({ onClose, T = THEMES.original }) {
+  const [status, setStatus] = useState("idle"); // idle|recording|paused|saving|done
+  const [elapsed, setElapsed] = useState(0);
+  const [level, setLevel] = useState(0);
+  const [markers, setMarkers] = useState([]);
+  const [error, setError] = useState(null);
+  const [matchName, setMatchName] = useState("");
+  const levelIntervalRef = useRef(null);
+  const timerIntervalRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (levelIntervalRef.current) clearInterval(levelIntervalRef.current);
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+      if (AudioRecorder.isRecording()) AudioRecorder.stop();
+    };
+  }, []);
+
+  const fmtTime = (s) => {
+    const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = Math.floor(s%60);
+    return (h > 0 ? h + ":" : "") + String(m).padStart(2,"0") + ":" + String(sec).padStart(2,"0");
+  };
+
+  const handleStart = async () => {
+    setError(null);
+    const ok = await AudioRecorder.start((st) => {
+      if (st === "denied") setError("Microphone access denied. Enable in browser settings.");
+      else if (st === "unsupported") setError("Audio recording not supported in this browser.");
+      else if (st === "error") setError("Could not start recording.");
+    });
+    if (ok) {
+      setStatus("recording");
+      timerIntervalRef.current = setInterval(() => setElapsed(AudioRecorder.getElapsed()), 500);
+      levelIntervalRef.current = setInterval(() => setLevel(AudioRecorder.getLevel()), 100);
+    }
+  };
+
+  const handlePauseResume = () => {
+    if (status === "recording") { AudioRecorder.pause(); setStatus("paused"); }
+    else if (status === "paused") { AudioRecorder.resume(); setStatus("recording"); }
+  };
+
+  const handleMark = () => {
+    if (status !== "recording") return;
+    const m = AudioRecorder.addMarker();
+    setMarkers(AudioRecorder.getMarkers());
+    if (navigator.vibrate) navigator.vibrate(50);
+  };
+
+  const handleStop = async () => {
+    setStatus("saving");
+    if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+    if (levelIntervalRef.current) clearInterval(levelIntervalRef.current);
+    const result = await AudioRecorder.stop();
+    if (!result) { setError("Recording failed"); setStatus("idle"); return; }
+    const id = "rec_" + Date.now();
+    const name = matchName || ("Match " + new Date().toLocaleString());
+    try {
+      await AudioStorage.save({
+        id: id, name: name, blob: result.blob, duration: result.duration,
+        markers: result.markers, mimeType: result.mimeType, savedAt: Date.now(),
+      });
+      // Also trigger download
+      const url = URL.createObjectURL(result.blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name.replace(/[^a-zA-Z0-9]/g, "_") + (result.mimeType.includes("mp4") ? ".m4a" : ".webm");
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setStatus("done");
+    } catch(e) {
+      setError("Save failed: " + e.message);
+      setStatus("idle");
+    }
+  };
+
+  const isRec = status === "recording";
+  const isPaused = status === "paused";
+  const active = isRec || isPaused;
+
+  return React.createElement('div', { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },}
+    , React.createElement('div', { style: { background: T.card, borderRadius: 16, padding: 28, maxWidth: 500, width: "100%", border: "2px solid " + T.accent, boxShadow: "0 20px 60px rgba(0,0,0,0.8)" },}
+      , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 },}
+        , React.createElement('div', { style: { fontSize: 20, fontWeight: 900, color: T.text, fontFamily: T.fontDisplay },}, "🎙️ Match Audio Recorder")
+        , React.createElement('button', { onClick: () => { if (active) { if (!confirm("Stop and discard recording?")) return; AudioRecorder.stop(); } onClose(); }, style: { background: "transparent", border: "1px solid " + T.border, color: T.textMuted, borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 14 },}, "✕")
+      )
+      , !active && status !== "done" && React.createElement('input', { placeholder: "Match name (optional)", value: matchName, onChange: e => setMatchName(e.target.value), style: { width: "100%", padding: "10px 12px", borderRadius: 8, border: "2px solid " + T.border, background: T.bgDeep, color: T.text, fontSize: 14, marginBottom: 16, boxSizing: "border-box" },})
+      , error && React.createElement('div', { style: { padding: "8px 12px", background: DANGER + "15", border: "1px solid " + DANGER, borderRadius: 6, color: DANGER, fontSize: 12, marginBottom: 12 },}, "⚠ " + error)
+      /* Timer & level display */
+      , React.createElement('div', { style: { textAlign: "center", padding: "24px 0", background: T.bgDeep, borderRadius: 12, marginBottom: 16, border: "1px solid " + T.border },}
+        , React.createElement('div', { style: { fontSize: 48, fontWeight: 900, color: isRec ? "#52c41a" : (isPaused ? "#f4d35e" : T.textMuted), fontFamily: "monospace", letterSpacing: 2 },}, fmtTime(elapsed))
+        , React.createElement('div', { style: { fontSize: 11, color: T.textMuted, marginTop: 4, letterSpacing: 2, textTransform: "uppercase" },}, status === "idle" ? "Ready to record" : status === "recording" ? "● Recording" : status === "paused" ? "⏸ Paused" : status === "saving" ? "Saving..." : "✓ Saved & Downloaded")
+        /* Audio level meter */
+        , active && React.createElement('div', { style: { height: 8, background: T.border, borderRadius: 4, margin: "12px 30px 0", overflow: "hidden" },}
+          , React.createElement('div', { style: { height: "100%", width: (level * 100) + "%", background: "linear-gradient(90deg,#52c41a,#f4d35e,#e63946)", transition: "width 0.1s" },})
+        )
+      )
+      /* Markers list */
+      , markers.length > 0 && React.createElement('div', { style: { maxHeight: 100, overflowY: "auto", marginBottom: 12, padding: "8px 12px", background: T.bgDeep, borderRadius: 8, border: "1px solid " + T.border },}
+        , React.createElement('div', { style: { fontSize: 10, color: T.textMuted, fontWeight: 700, letterSpacing: 1, marginBottom: 4 },}, markers.length + " MARKERS")
+        , markers.slice(-5).reverse().map((m, i) => React.createElement('div', { key: i, style: { fontSize: 11, color: T.text, padding: "2px 0" },}, "● " + fmtTime(m.t) + " — " + m.label))
+      )
+      /* Controls */
+      , React.createElement('div', { style: { display: "flex", gap: 10 },}
+        , status === "idle" && React.createElement('button', { onClick: handleStart, style: { flex: 1, padding: "16px 0", borderRadius: 12, fontSize: 16, fontWeight: 800, cursor: "pointer", border: "none", background: "#e63946", color: WHITE },}, "● START RECORDING")
+        , active && React.createElement('button', { onClick: handleMark, disabled: !isRec, style: { flex: 2, padding: "20px 0", borderRadius: 12, fontSize: 18, fontWeight: 900, cursor: isRec ? "pointer" : "not-allowed", border: "3px solid " + T.accent, background: T.accent + "35", color: T.accent, opacity: isRec ? 1 : 0.4, letterSpacing: 1 },}, "● MARK POINT (" + markers.length + ")")
+        , active && React.createElement('button', { onClick: handlePauseResume, style: { flex: 1, padding: "14px 0", borderRadius: 10, fontSize: 14, fontWeight: 800, cursor: "pointer", border: "2px solid #f4d35e", background: "#f4d35e25", color: "#f4d35e" },}, isPaused ? "▶ RESUME" : "⏸ PAUSE")
+        , active && React.createElement('button', { onClick: handleStop, style: { flex: 1, padding: "14px 0", borderRadius: 10, fontSize: 14, fontWeight: 800, cursor: "pointer", border: "2px solid #52c41a", background: "#52c41a25", color: "#52c41a" },}, "■ STOP & SAVE")
+        , status === "done" && React.createElement('button', { onClick: onClose, style: { flex: 1, padding: "14px 0", borderRadius: 10, fontSize: 14, fontWeight: 800, cursor: "pointer", border: "2px solid " + T.accent, background: T.accent + "25", color: T.accent },}, "✓ DONE")
+      )
+      , React.createElement('div', { style: { marginTop: 14, fontSize: 10, color: T.textMuted, textAlign: "center", lineHeight: 1.5 },}, "💾 Auto-saves to browser + downloads to iPad. Markers help AI parse points later.")
+    )
+  );
+}
+
+
+
+
+// ─── WHISPER API CLIENT ───────────────────────────────────────────────────────
+const WhisperClient = {
+  API_URL: "https://api.openai.com/v1/audio/transcriptions",
+
+  getKey: function() { try { return localStorage.getItem("tennistag_openai_key") || ""; } catch(e) { return ""; } },
+  setKey: function(k) { try { localStorage.setItem("tennistag_openai_key", k); } catch(e) {} },
+  hasKey: function() { return !!this.getKey(); },
+
+  transcribe: async function(blob, prompt, onProgress) {
+    const key = this.getKey();
+    if (!key) throw new Error("No OpenAI API key configured. Open Settings to add one.");
+    if (!blob) throw new Error("No audio blob provided");
+
+    const fd = new FormData();
+    fd.append("file", blob, "match.webm");
+    fd.append("model", "whisper-1");
+    fd.append("response_format", "verbose_json");
+    fd.append("timestamp_granularities[]", "word");
+    if (prompt) fd.append("prompt", prompt);
+    fd.append("language", "en");
+
+    onProgress && onProgress({ stage: "uploading", percent: 0 });
+
+    try {
+      const res = await fetch(this.API_URL, {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + key },
+        body: fd,
+      });
+      onProgress && onProgress({ stage: "processing", percent: 50 });
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error("Whisper API error " + res.status + ": " + err.slice(0, 200));
+      }
+      const data = await res.json();
+      onProgress && onProgress({ stage: "done", percent: 100 });
+      return data; // { text, words: [{word, start, end}], segments, language, duration }
+    } catch(e) {
+      onProgress && onProgress({ stage: "error", error: e.message });
+      throw e;
+    }
+  },
+};
+
+// ─── TENNIS VOCABULARY PARSER ─────────────────────────────────────────────────
+// Embedded vocabulary — same structure as tennis_vocabulary.json
+// ─── TENNIS VOCABULARY v2.0 ──────────────────────────────────────────────────
+// Built from analysis of 3 real match transcripts (~155 min, 6,457 words)
+const TENNIS_VOCAB = {
+  // Phonetic aliases applied as text replacements BEFORE category matching
+  _phonetic_aliases: {
+    "younis": ["yunus","yunis","younes","yoonis","unis","unus","unit","yoonus","yoneis","yunes"],
+    "rallies": ["rylands","rylanns","ryland","raylands"],
+    "rally length 9-12": ["rally length 1-12","rally length 1 12"],
+  },
+  _players_pre_seeded: {
+    "Younis": ["younis","yunus","yunis","younes","unus","unis","unit","yoonis","yoneis"]
+  },
+  serve_type: {
+    first_serve: { synonyms: ["first serve","1st serve"], tags: { serveType: "1st Serve" }},
+    second_serve: { synonyms: ["second serve","2nd serve"], tags: { serveType: "2nd Serve" }},
+  },
+  serve_zone: {
+    wide: { synonyms: ["wide serve","first serve wide","second serve wide","wide","out wide","served wide"], tags: { serveZone: "Wide" }},
+    body: { synonyms: ["middle serve","first serve middle","second serve middle","middle","body serve","body","into the body","jam serve","jammed"], tags: { serveZone: "Body" }},
+    t: { synonyms: ["down the tee","down the t","tee serve","t serve","up the tee","first serve tee","second serve tee","tee"], tags: { serveZone: "T" }},
+  },
+  serve_spin: {
+    flat: { synonyms: ["flat serve","flat"], tags: { serveSpin: "Flat" }},
+    slice: { synonyms: ["slice serve","sliced serve","slice","sliced"], tags: { serveSpin: "Slice" }},
+    kick: { synonyms: ["kick serve","kicker","topspin serve","kick"], tags: { serveSpin: "Kick" }},
+  },
+  serve_fault: {
+    fault_net: { synonyms: ["fault net","first serve fault net","fault into the net"], tags: { serveFault: "Net" }},
+    fault_long: { synonyms: ["fault long","first serve fault long","served long fault"], tags: { serveFault: "Long" }},
+    fault_wide: { synonyms: ["fault wide","first serve fault wide"], tags: { serveFault: "Wide" }},
+    foot_fault: { synonyms: ["foot fault","foot faulted"], tags: { serveFault: "Foot Fault" }},
+  },
+  outcomes: {
+    ace: { synonyms: ["ace","aced","ace serve"], tags: { outcome: "Ace", rallyLength: "0-4" }, auto: "server" },
+    double_fault: { synonyms: ["double fault","double faulted","double fault in"], tags: { outcome: "Double Fault", rallyLength: "0-4" }, auto: "returner" },
+    return_error: { synonyms: ["return error","return into the net","return at the net","return long","return wide"], tags: { outcome: "Return Error", rallyLength: "0-4" }, auto: "server" },
+    return_winner: { synonyms: ["return winner","winning return"], tags: { outcome: "Return Winner", rallyLength: "0-4" }, auto: "returner" },
+    winner: { synonyms: ["winner from","winner was","winner by","clean winner","winning shot","winner"], tags: { outcome: "Winner" }},
+    forced_error: { synonyms: ["forced error on","forced error","fe"], tags: { outcome: "Forced Error" }},
+    unforced_error: { synonyms: ["unforced error","unforced","ue"], tags: { outcome: "Unforced Error" }},
+    error_generic: { synonyms: ["error from","error on","error was","error in the net","error long","error wide","error"], tags: { outcome: "Unforced Error" }},
+    let_call: { synonyms: ["let","let serve"], tags: { outcome: "Let" }, reset: true },
+  },
+  shot_types: {
+    fh_volley: { synonyms: ["forehand volley","fh volley"], tags: { shotType: "Volley Forehand" }},
+    bh_volley: { synonyms: ["backhand volley","bh volley"], tags: { shotType: "Volley Backhand" }},
+    slice_fh: { synonyms: ["slice forehand","forehand slice"], tags: { shotType: "Slice Forehand" }},
+    slice_bh: { synonyms: ["slice backhand","backhand slice","sliced backhand"], tags: { shotType: "Slice Backhand" }},
+    approach_fh: { synonyms: ["forehand approach","approach forehand"], tags: { shotType: "Approach Forehand" }},
+    approach_bh: { synonyms: ["backhand approach","approach backhand"], tags: { shotType: "Approach Backhand" }},
+    drop_shot: { synonyms: ["drop shot","dropper","drop volley"], tags: { shotType: "Drop Shot" }},
+    lob: { synonyms: ["lob","lobbed"], tags: { shotType: "Lob" }},
+    overhead: { synonyms: ["overhead","smash"], tags: { shotType: "Overhead" }},
+    half_volley: { synonyms: ["half volley","half-volley"], tags: { shotType: "Half Volley" }},
+    forehand: { synonyms: ["forehand","fh"], tags: { shotType: "Forehand" }, contextual: true },
+    backhand: { synonyms: ["backhand","bh"], tags: { shotType: "Backhand" }, contextual: true },
+    volley: { synonyms: ["volley","volleyed"], tags: { shotType: "Volley" }, contextual: true },
+  },
+  return_hand: {
+    return_fh: { synonyms: ["return forehand","forehand return","fh return"], tags: { returnHand: "Forehand" }},
+    return_bh: { synonyms: ["return backhand","backhand return","bh return"], tags: { returnHand: "Backhand" }},
+  },
+  return_position: {
+    behind: { synonyms: ["behind the baseline","behind baseline","from behind the baseline"], tags: { returnPosition: "Behind Baseline" }},
+    on: { synonyms: ["on the baseline","on baseline"], tags: { returnPosition: "On Baseline" }},
+    inside: { synonyms: ["inside the baseline","inside baseline","stepped inside","from inside the baseline"], tags: { returnPosition: "Inside Baseline" }},
+  },
+  shot_direction: {
+    cross: { synonyms: ["cross court","crosscourt","cross-court","by a cross court"], tags: { direction: "Cross-Court" }},
+    dtl: { synonyms: ["down the line","dtl"], tags: { direction: "Down-the-Line" }},
+    inside_out: { synonyms: ["inside out"], tags: { direction: "Inside-Out" }},
+    inside_in: { synonyms: ["inside in"], tags: { direction: "Inside-In" }},
+  },
+  error_direction: {
+    net: { synonyms: ["into the net","in the net","net error","netted","at the net error","error at the net","error in the net"], tags: { errorDirection: "Net" }},
+    long: { synonyms: ["return long","long error","way long","over the baseline","long from"], tags: { errorDirection: "Long" }},
+    wide: { synonyms: ["return wide","wide error","way wide","missed wide","wide from"], tags: { errorDirection: "Wide" }},
+  },
+  rally_length: {
+    r04: { synonyms: ["rally length 0-4","short rally"], tags: { rallyLength: "0-4" }},
+    r58: { synonyms: ["rally length 5-8","medium rally"], tags: { rallyLength: "5-8" }},
+    r912: { synonyms: ["rally length 9-12","rally length 1-12","long rally"], tags: { rallyLength: "9-12" }},
+    r13: { synonyms: ["rally length 13+","rally length 13 plus","13 plus","very long rally","marathon rally"], tags: { rallyLength: "13+" }},
+  },
+  net_approach: {
+    both: { synonyms: ["both at the net","both at net","net approach from both players"], tags: { netApproach: "both" }},
+    generic: { synonyms: ["net approach","approached the net","came to net","at the net"], tags: { netApproach: "?" }},
+    sv: { synonyms: ["serve and volley","serve volley"], tags: { netApproach: "server" }},
+  },
+  sequencing: {
+    s1: { synonyms: ["serve plus one","serve+1","from the serve plus one"], tags: { shotContext: "serve+1" }},
+    r1: { synonyms: ["return plus one","return+1","from the return plus one"], tags: { shotContext: "return+1" }},
+  },
+  game_set: {
+    leads: { synonyms: ["leads","leading","is leading"], tags: { gameLead: true }},
+    game_to: { synonyms: ["game goes to","game to","point goes to"], tags: { gameMarker: true }},
+    first_set: { synonyms: ["first set","1st set"], tags: { setMarker: 1 }},
+    second_set: { synonyms: ["second set","2nd set"], tags: { setMarker: 2 }},
+    third_set: { synonyms: ["third set","3rd set"], tags: { setMarker: 3 }},
+  },
+  score_correction: {
+    correct: { synonyms: ["score is now","score now is","score is","current score","correction score"], tags: { scoreCorrection: true }},
+  },
+};
+
+const TennisVocabParser = {
+  WHISPER_PROMPT: "Tennis match tagging by Younis. Players: Younis. Common terms: ace, fault, double fault, first serve, second serve, forehand, backhand, volley, slice, kick serve, flat, wide, body, middle, tee, down the tee, down the line, cross court, unforced error, forced error, winner, return forehand, return backhand, behind the baseline, on the baseline, inside the baseline, serve plus one, return plus one, approach shot, drop shot, lob, overhead, rally length 0-4, rally length 5-8, rally length 9-12, rally length 13+, deuce, advantage, love 15, 30 15, 40 15, break point, net approach, at the net, both at the net, score is, leads, first game, second game, first set, second set, game goes to.",
+
+  // Apply phonetic aliases — replace mistranscriptions globally
+  _normalize: function(text) {
+    let t = " " + text.toLowerCase() + " ";
+    const aliases = TENNIS_VOCAB._phonetic_aliases;
+    Object.keys(aliases).forEach(canonical => {
+      aliases[canonical].forEach(variant => {
+        const re = new RegExp("\\b" + variant.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "gi");
+        t = t.replace(re, canonical);
+      });
+    });
+    return t.trim();
+  },
+
+  parse: function(transcript, markers, opponentName) {
+    if (!transcript || !transcript.text) return { points: [], rawText: "" };
+    const rawText = transcript.text;
+    const words = transcript.words || [];
+
+    // Normalize the full text
+    const normalizedText = this._normalize(rawText);
+    // Build per-player alias list (Younis pre-seeded + opponent if provided)
+    const playerAliases = { Younis: TENNIS_VOCAB._players_pre_seeded.Younis };
+    if (opponentName) playerAliases[opponentName] = [opponentName.toLowerCase()];
+
+    // Step 1: Layered segmentation into utterances
+    const segments = this._segment(words, markers || []);
+
+    // Step 2: For each segment, extract tags
+    const points = segments.map((seg, i) => {
+      const segText = this._normalize(seg.words.map(w => w.word).join(" "));
+      const tags = this._extractTags(segText);
+      const winner = this._extractWinner(segText, playerAliases, tags);
+      // Auto-fill rally length default
+      if (!tags.rallyLength && tags.outcome) tags.rallyLength = "0-4";
+      return {
+        id: "p" + (i + 1),
+        pointNum: i + 1,
+        startTime: seg.start, endTime: seg.end,
+        text: seg.words.map(w => w.word).join(" "),
+        normalizedText: segText,
+        tags: tags,
+        pointWinner: winner,
+        confidence: this._confidence(tags),
+        approved: false,
+      };
+    }).filter(p => Object.keys(p.tags).filter(k => !k.startsWith("_")).length > 0);
+
+    return { points: points, rawText: rawText, words: words };
+  },
+
+  _segment: function(words, markers) {
+    if (!words.length) return [];
+    // PRIMARY: marker-based segmentation (user taps MARK after every point)
+    if (markers && markers.length > 0) {
+      return this._segmentByMarkers(words, markers);
+    }
+    // FALLBACK: split on "first serve" / "second serve" only
+    // (for legacy recordings without markers — score-aware but not outcome-based)
+    return this._segmentByServeAnnouncements(words);
+  },
+
+  _segmentByMarkers: function(words, markers) {
+    // Each marker defines the END of a point. Words between markers = one point.
+    const segs = [];
+    const sorted = [...markers].sort((a,b) => a.t - b.t);
+    let prev = 0;
+    sorted.forEach(m => {
+      const sw = words.filter(w => w.start >= prev && w.start <= m.t);
+      if (sw.length) segs.push({ start: sw[0].start, end: sw[sw.length-1].end, words: sw });
+      prev = m.t;
+    });
+    // Any words after the last marker = final point
+    const fw = words.filter(w => w.start > prev);
+    if (fw.length) segs.push({ start: fw[0].start, end: fw[fw.length-1].end, words: fw });
+    return segs;
+  },
+
+  _segmentByServeAnnouncements: function(words) {
+    // Fallback for unmarked recordings: split at each "first serve" or "second serve"
+    // announcement that comes AFTER a gap (so consecutive "first serve fault second serve"
+    // stays as one point). Score callouts also split.
+    const segs = []; let cur = [];
+    const scoreKws = ["love","all","deuce"];
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i];
+      const wText = w.word.toLowerCase().replace(/[.,!?]/g,"");
+      const nextText = words[i+1] ? words[i+1].word.toLowerCase().replace(/[.,!?]/g,"") : "";
+      const combo = wText + " " + nextText;
+      // Detect "first serve" at the start of a new point (after score callout OR gap)
+      const isNewServe = (combo === "first serve" || combo === "second serve");
+      const gap = words[i+1] ? (words[i+1].start - w.end) : 0;
+      const afterScore = scoreKws.some(k => wText.includes(k));
+      // Split BEFORE a new serve announcement, after a score/game marker, or after a 3s+ gap
+      if ((isNewServe && cur.length > 0 && (gap > 0.5 || afterScore)) || afterScore || gap > 3) {
+        if (cur.length) {
+          segs.push({ start: cur[0].start, end: cur[cur.length-1].end, words: [...cur] });
+          cur = [];
+        }
+      }
+      cur.push(w);
+    }
+    if (cur.length) segs.push({ start: cur[0].start, end: cur[cur.length-1].end, words: cur });
+    return segs;
+  },
+
+  _extractTags: function(text) {
+    const tags = {};
+    Object.keys(TENNIS_VOCAB).forEach(catKey => {
+      if (catKey.startsWith("_")) return;
+      const cat = TENNIS_VOCAB[catKey];
+      let bestMatch = null; let bestLen = 0;
+      Object.keys(cat).forEach(termKey => {
+        const term = cat[termKey];
+        if (!term.synonyms) return;
+        term.synonyms.forEach(syn => {
+          if (text.includes(syn) && syn.length > bestLen) {
+            bestMatch = term; bestLen = syn.length;
+          }
+        });
+      });
+      if (bestMatch && bestMatch.tags) {
+        Object.assign(tags, bestMatch.tags);
+        if (bestMatch.auto) tags._autoWinner = bestMatch.auto;
+      }
+    });
+    return tags;
+  },
+
+  _extractWinner: function(text, playerAliases, tags) {
+    // Look for "from X", "by X", "X leads" patterns
+    const lower = text.toLowerCase();
+    let foundPlayer = null;
+    Object.keys(playerAliases).forEach(canonical => {
+      playerAliases[canonical].forEach(alias => {
+        const patterns = [`from ${alias}`, `by ${alias}`, `${alias} leads`, `point goes to ${alias}`, `game goes to ${alias}`];
+        if (patterns.some(p => lower.includes(p))) foundPlayer = canonical;
+      });
+    });
+    return foundPlayer;
+  },
+
+  _confidence: function(tags) {
+    const count = Object.keys(tags).filter(k => !k.startsWith("_")).length;
+    if (count >= 4) return "high";
+    if (count >= 2) return "medium";
+    return "low";
+  },
+};
+
+// ─── SETTINGS MODAL (API key) ─────────────────────────────────────────────────
+function SettingsModal({ onClose, T = THEMES.original }) {
+  const [key, setKey] = useState(WhisperClient.getKey());
+  const [showKey, setShowKey] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const handleSave = () => {
+    WhisperClient.setKey(key.trim());
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  return React.createElement('div', { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },}
+    , React.createElement('div', { style: { background: T.card, borderRadius: 16, padding: 28, maxWidth: 500, width: "100%", border: "2px solid " + T.accent },}
+      , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },}
+        , React.createElement('div', { style: { fontSize: 20, fontWeight: 900, color: T.text },}, "⚙️ Settings")
+        , React.createElement('button', { onClick: onClose, style: { background: "transparent", border: "1px solid " + T.border, color: T.textMuted, borderRadius: 6, padding: "4px 10px", cursor: "pointer" },}, "✕")
+      )
+      , React.createElement('div', { style: { fontSize: 12, color: T.textMuted, marginBottom: 12 },}, "OpenAI API key for Whisper transcription. Stored only in your browser — never sent anywhere except directly to OpenAI.")
+      , React.createElement('label', { style: { fontSize: 11, color: T.textMuted, fontWeight: 700, letterSpacing: 1, marginBottom: 4, display: "block" },}, "OPENAI API KEY")
+      , React.createElement('div', { style: { display: "flex", gap: 8, marginBottom: 6 },}
+        , React.createElement('input', { type: showKey ? "text" : "password", placeholder: "sk-proj-...", value: key, onChange: e => setKey(e.target.value), style: { flex: 1, padding: "10px 12px", borderRadius: 8, border: "2px solid " + T.border, background: T.bgDeep, color: T.text, fontSize: 13, fontFamily: "monospace", boxSizing: "border-box" },})
+        , React.createElement('button', { onClick: () => setShowKey(!showKey), style: { padding: "0 12px", borderRadius: 8, border: "1px solid " + T.border, background: T.card2, color: T.textMuted, cursor: "pointer", fontSize: 14 },}, showKey ? "🙈" : "👁")
+      )
+      , React.createElement('div', { style: { fontSize: 10, color: T.textMuted, marginBottom: 16 },}, "Get your key at platform.openai.com/api-keys · Cost: ~$0.006/min audio")
+      , React.createElement('button', { onClick: handleSave, style: { width: "100%", padding: "12px 0", borderRadius: 10, fontSize: 14, fontWeight: 800, cursor: "pointer", border: "2px solid " + T.accent, background: T.accent + "25", color: T.accent },}, saved ? "✓ Saved" : "💾 Save Key")
+      , key && React.createElement('div', { style: { fontSize: 11, color: "#52c41a", marginTop: 10, textAlign: "center" },}, "✓ Key configured (" + key.slice(0, 8) + "..." + key.slice(-4) + ")")
+    )
+  );
+}
+
+// ─── RECORDINGS LIBRARY MODAL ─────────────────────────────────────────────────
+function RecordingsLibraryModal({ onClose, onTranscribe, T = THEMES.original }) {
+  const [recordings, setRecordings] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [playingId, setPlayingId] = useState(null);
+  const [audioUrl, setAudioUrl] = useState(null);
+  const audioRef = useRef(null);
+
+  const load = () => {
+    setLoading(true);
+    AudioStorage.list().then(list => { setRecordings(list); setLoading(false); }).catch(e => { setLoading(false); });
+  };
+  useEffect(() => { load(); return () => { if (audioUrl) URL.revokeObjectURL(audioUrl); }; }, []);
+
+  const fmtTime = (s) => { const m = Math.floor(s/60), sec = Math.floor(s%60); return m + ":" + String(sec).padStart(2,"0"); };
+  const fmtSize = (b) => b > 1048576 ? (b/1048576).toFixed(1) + " MB" : (b/1024).toFixed(0) + " KB";
+  const fmtDate = (ts) => new Date(ts).toLocaleString();
+
+  const handlePlay = async (rec) => {
+    if (playingId === rec.id) {
+      if (audioRef.current) audioRef.current.pause();
+      setPlayingId(null);
+      return;
+    }
+    const full = await AudioStorage.get(rec.id);
+    if (full && full.blob) {
+      if (audioUrl) URL.revokeObjectURL(audioUrl);
+      const url = URL.createObjectURL(full.blob);
+      setAudioUrl(url);
+      setPlayingId(rec.id);
+      setTimeout(() => { if (audioRef.current) { audioRef.current.src = url; audioRef.current.play(); } }, 100);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!confirm("Delete this recording permanently?")) return;
+    await AudioStorage.delete(id);
+    load();
+  };
+
+  // Import existing audio file from disk into IndexedDB
+  const fileInputRef = useRef(null);
+  const handleImport = () => { if (fileInputRef.current) fileInputRef.current.click(); };
+  const handleFileSelected = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    try {
+      // Get audio duration via temporary <audio> element
+      const url = URL.createObjectURL(file);
+      const audio = new Audio(url);
+      await new Promise((resolve) => {
+        audio.onloadedmetadata = resolve;
+        audio.onerror = resolve;
+        setTimeout(resolve, 3000);
+      });
+      const duration = audio.duration && isFinite(audio.duration) ? audio.duration : 0;
+      URL.revokeObjectURL(url);
+      await AudioStorage.save({
+        id: "import_" + Date.now(),
+        name: file.name.replace(/\.[^.]+$/, ""),
+        blob: file,
+        duration: duration,
+        markers: [],
+        mimeType: file.type || "audio/mpeg",
+        savedAt: Date.now(),
+      });
+      e.target.value = ""; // reset input
+      load();
+    } catch(err) {
+      alert("Import failed: " + err.message);
+    }
+  };
+
+  return React.createElement('div', { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },}
+    , React.createElement('input', { ref: fileInputRef, type: "file", accept: "audio/*,.mp3,.m4a,.wav,.webm,.ogg", onChange: handleFileSelected, style: { display: "none" },})
+    , React.createElement('div', { style: { background: T.card, borderRadius: 16, padding: 24, maxWidth: 700, width: "100%", maxHeight: "85vh", display: "flex", flexDirection: "column", border: "2px solid " + T.accent },}
+      , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },}
+        , React.createElement('div', null
+          , React.createElement('div', { style: { fontSize: 18, fontWeight: 900, color: T.text },}, "🎵 Recordings Library")
+          , React.createElement('div', { style: { fontSize: 11, color: T.textMuted },}, recordings.length + " saved · Tap 🤖 to transcribe with Whisper")
+        )
+        , React.createElement('div', { style: { display: "flex", gap: 8 },}
+          , React.createElement('button', { onClick: handleImport, style: { padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 800, cursor: "pointer", border: "2px solid #5abaff", background: "#5abaff20", color: "#5abaff" },}, "📁 Import Audio")
+          , React.createElement('button', { onClick: onClose, style: { background: "transparent", border: "1px solid " + T.border, color: T.textMuted, borderRadius: 6, padding: "4px 10px", cursor: "pointer" },}, "✕")
+        )
+      )
+      , audioUrl && React.createElement('audio', { ref: audioRef, controls: true, style: { width: "100%", marginBottom: 12 },})
+      , loading ? React.createElement('div', { style: { textAlign: "center", padding: 40, color: T.textMuted },}, "Loading...")
+      : recordings.length === 0 ? React.createElement('div', { style: { textAlign: "center", padding: 40, color: T.textMuted },}, "No recordings yet. Use 🎙️ Record Audio to create one.")
+      : React.createElement('div', { style: { flex: 1, overflowY: "auto" },}
+          , recordings.map(r => React.createElement('div', { key: r.id, style: { padding: "12px 14px", borderRadius: 8, border: "1px solid " + T.border, marginBottom: 8, background: T.card2, display: "flex", alignItems: "center", gap: 10 },}
+            , React.createElement('div', { style: { flex: 1 },}
+              , React.createElement('div', { style: { fontWeight: 800, fontSize: 13, color: T.text },}, r.name)
+              , React.createElement('div', { style: { fontSize: 10, color: T.textMuted, marginTop: 3 },}, fmtTime(r.duration), " · ", fmtSize(r.size), " · ", (r.markers || []).length, " markers · ", fmtDate(r.savedAt))
+            )
+            , React.createElement('button', { onClick: () => handlePlay(r), style: { padding: "6px 12px", borderRadius: 6, border: "1px solid " + T.accent, background: playingId === r.id ? T.accent + "40" : "transparent", color: T.accent, cursor: "pointer", fontSize: 12, fontWeight: 700 },}, playingId === r.id ? "⏸" : "▶")
+            , React.createElement('button', { onClick: () => onTranscribe(r), style: { padding: "6px 12px", borderRadius: 6, border: "1.5px solid #52c41a", background: "#52c41a25", color: "#52c41a", cursor: "pointer", fontSize: 12, fontWeight: 800 },}, "🤖 Transcribe")
+            , React.createElement('button', { onClick: () => handleDelete(r.id), style: { padding: "6px 10px", borderRadius: 6, border: "1px solid " + DANGER + "60", background: "transparent", color: DANGER, cursor: "pointer", fontSize: 12 },}, "🗑")
+          ))
+        )
+    )
+  );
+}
+
+
+// ─── AUDIO MATCH SETUP FORM ──────────────────────────────────────────────────
+function AudioMatchSetupForm({ recording, parsedPoints, onConfirm, onClose, T = THEMES.original }) {
+  const [p1, setP1] = useState("Younis");
+  const [p2, setP2] = useState("");
+  const [p1utr, setP1utr] = useState("");
+  const [p2utr, setP2utr] = useState("");
+  const [p1hand, setP1hand] = useState("Right");
+  const [p2hand, setP2hand] = useState("Right");
+  const [surface, setSurface] = useState("Hard");
+  const [format, setFormat] = useState("Best of 3");
+  const [tournament, setTournament] = useState("");
+  const [date, setDate] = useState(new Date().toISOString().slice(0,10));
+  const [conditions, setConditions] = useState("");
+  const [superTie, setSuperTie] = useState(false);
+
+  const handleConfirm = () => {
+    if (!p1.trim() || !p2.trim()) { alert("Player 1 and Player 2 names are required"); return; }
+    onConfirm({
+      p1Name: p1.trim(), p2Name: p2.trim(),
+      p1utr: p1utr, p2utr: p2utr, p1hand: p1hand, p2hand: p2hand,
+      surface: surface, format: format, tournament: tournament || ("Audio Import: " + recording.name),
+      date: date, conditions: conditions, superTie: superTie,
+    });
+  };
+
+  const Input = (label, val, set, opts = {}) => React.createElement('div', { style: { marginBottom: 10 },}
+    , React.createElement('div', { style: { fontSize: 10, color: T.textMuted, fontWeight: 700, letterSpacing: 1, marginBottom: 4 },}, label)
+    , React.createElement('input', { type: opts.type || "text", placeholder: opts.ph || "", value: val, onChange: e => set(e.target.value), style: { width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid " + T.border, background: T.bgDeep, color: T.text, fontSize: 12, boxSizing: "border-box" },})
+  );
+
+  const Select = (label, val, set, options) => React.createElement('div', { style: { marginBottom: 10 },}
+    , React.createElement('div', { style: { fontSize: 10, color: T.textMuted, fontWeight: 700, letterSpacing: 1, marginBottom: 4 },}, label)
+    , React.createElement('select', { value: val, onChange: e => set(e.target.value), style: { width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid " + T.border, background: T.bgDeep, color: T.text, fontSize: 12 },}
+      , options.map(o => React.createElement('option', { key: o, value: o }, o))
+    )
+  );
+
+  return React.createElement('div', { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.95)", zIndex: 10000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },}
+    , React.createElement('div', { style: { background: T.card, borderRadius: 16, padding: 28, maxWidth: 600, width: "100%", maxHeight: "92vh", overflowY: "auto", border: "2px solid " + T.accent },}
+      , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 },}
+        , React.createElement('div', { style: { fontSize: 20, fontWeight: 900, color: T.text },}, "🎵 Import Audio Match")
+        , React.createElement('button', { onClick: onClose, style: { background: "transparent", border: "1px solid " + T.border, color: T.textMuted, borderRadius: 6, padding: "4px 10px", cursor: "pointer" },}, "✕")
+      )
+      , React.createElement('div', { style: { fontSize: 11, color: T.textMuted, marginBottom: 16 },}, parsedPoints.length + " parsed points · " + recording.name + " · Enter match details below.")
+
+      , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 },}
+        , React.createElement('div', { style: { padding: 12, border: "2px solid " + (p1.trim() ? "#40c070" : T.border), borderRadius: 10, background: T.bgDeep },}
+          , React.createElement('div', { style: { fontSize: 10, color: "#40c070", fontWeight: 700, letterSpacing: 1, marginBottom: 8 },}, "🎾 PLAYER 1 (serves first)")
+          , Input("Name *", p1, setP1, {ph: "Younis"})
+          , Input("UTR", p1utr, setP1utr, {ph: "12.5"})
+          , Select("Dominant Hand", p1hand, setP1hand, ["Right", "Left"])
+        )
+        , React.createElement('div', { style: { padding: 12, border: "2px solid " + (p2.trim() ? "#b060e8" : T.border), borderRadius: 10, background: T.bgDeep },}
+          , React.createElement('div', { style: { fontSize: 10, color: "#b060e8", fontWeight: 700, letterSpacing: 1, marginBottom: 8 },}, "🎾 PLAYER 2 (opponent)")
+          , Input("Name *", p2, setP2, {ph: "Opponent name"})
+          , Input("UTR", p2utr, setP2utr, {ph: "12.5"})
+          , Select("Dominant Hand", p2hand, setP2hand, ["Right", "Left"])
+        )
+      )
+      , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },}
+        , Select("Surface", surface, setSurface, ["Hard", "Clay", "Grass", "Carpet"])
+        , Select("Format", format, setFormat, ["Best of 3", "Best of 5", "1 Set", "Pro Set"])
+        , Input("Tournament / Event", tournament, setTournament, {ph: "Optional"})
+        , Input("Date", date, setDate, {type: "date"})
+      )
+      , Input("Conditions (weather, wind, etc.)", conditions, setConditions, {ph: "Optional"})
+
+      , React.createElement('div', { style: { display: "flex", gap: 10, marginTop: 18 },}
+        , React.createElement('button', { onClick: onClose, style: { flex: 1, padding: "12px 0", borderRadius: 10, fontSize: 13, fontWeight: 800, cursor: "pointer", border: "1px solid " + T.border, background: "transparent", color: T.textMuted },}, "Cancel")
+        , React.createElement('button', { onClick: handleConfirm, style: { flex: 2, padding: "12px 0", borderRadius: 10, fontSize: 14, fontWeight: 800, cursor: "pointer", border: "2px solid #52c41a", background: "#52c41a25", color: "#52c41a" },}, "✓ Import " + parsedPoints.length + " Points")
+      )
+    )
+  );
+}
+
+// ─── AUDIO → TENNISTAG FIELD MAPPER ─────────────────────────────────────────
+// Converts parsed audio points into TennisTag point objects compatible with
+// the main tagging/stats/export pipeline
+function mapParsedToTagPoints(parsedPoints, p1Name, p2Name) {
+  const p1Lower = (p1Name || "").toLowerCase();
+  const p2Lower = (p2Name || "").toLowerCase();
+
+  return parsedPoints.map((p, idx) => {
+    const t = p.tags || {};
+    // Determine server — alternate games based on point index (fallback)
+    // TODO: smarter server tracking from parsed data
+    const server = idx % 2 === 0 ? "p1" : "p2";
+    // Resolve point winner from parsed player name
+    let pointWinner = null;
+    if (p.pointWinner) {
+      const pw = p.pointWinner.toLowerCase();
+      if (pw.includes(p1Lower) || p1Lower.includes(pw)) pointWinner = "p1";
+      else if (pw.includes(p2Lower) || p2Lower.includes(pw)) pointWinner = "p2";
+    }
+    // Auto-fill winner from outcome for Ace/DF/RetErr/RetWin
+    if (!pointWinner) {
+      if (t.outcome === "Ace" || t.outcome === "Return Error") pointWinner = server;
+      else if (t.outcome === "Double Fault" || t.outcome === "Return Winner") pointWinner = server === "p1" ? "p2" : "p1";
+    }
+    // Map shotType into winningShot or errorShot based on outcome
+    let winningShot = null, errorShot = null;
+    if (t.shotType) {
+      if (t.outcome === "Winner") winningShot = t.shotType;
+      else if (t.outcome && t.outcome.includes("Error")) errorShot = t.shotType;
+    }
+    // Map direction to serve+1 or return+1 direction based on context
+    let sp1Dir = null, rp1Dir = null, servePlusOne = null, returnPlusOne = null;
+    if (t.shotContext === "serve+1") {
+      servePlusOne = t.shotType || null;
+      sp1Dir = t.direction || null;
+    } else if (t.shotContext === "return+1") {
+      returnPlusOne = t.shotType || null;
+      rp1Dir = t.direction || null;
+    }
+    return {
+      id: "audio_" + idx + "_" + Date.now(),
+      server: server,
+      serveType: t.serveType || null,
+      serveSpin: t.serveSpin || null,
+      serveZone: t.serveZone || null,
+      serveFault: t.serveFault || null,
+      serveSide: null, // will be auto-derived by rebuildScore
+      returnHand: t.returnHand || null,
+      returnPosition: t.returnPosition || null,
+      returnLandZone: null,
+      servePlusOne: servePlusOne,
+      sp1Dir: sp1Dir,
+      returnPlusOne: returnPlusOne,
+      rp1Dir: rp1Dir,
+      rallyLength: t.rallyLength || "0-4",
+      outcome: t.outcome || null,
+      errorShot: errorShot,
+      errorDirection: t.errorDirection || null,
+      shotType: winningShot || errorShot, // legacy field
+      winningShot: winningShot,
+      netApproach: t.netApproach && t.netApproach !== "?" ? t.netApproach : null,
+      pressurePoint: false,
+      pointWinner: pointWinner,
+      // Audio-specific metadata
+      _source: "audio",
+      _audioStartTime: p.startTime,
+      _audioEndTime: p.endTime,
+      _confidence: p.confidence,
+      _originalText: p.text,
+    };
+  });
+}
+
+// ─── TRANSCRIPTION RESULT MODAL ───────────────────────────────────────────────
+function TranscriptionResultModal({ recording, onClose, onImport, T = THEMES.original }) {
+  const [stage, setStage] = useState("ready");
+  const [progress, setProgress] = useState(0);
+  const [error, setError] = useState(null);
+  const [result, setResult] = useState(null);
+  const [parsedPoints, setParsedPoints] = useState([]);
+  const [reparseMsg, setReparseMsg] = useState(null);
+  const [showSetupForm, setShowSetupForm] = useState(false);
+
+  // Load cached transcript on mount (if exists)
+  useEffect(() => {
+    AudioStorage.get(recording.id).then(full => {
+      if (full && full.cachedTranscript) {
+        setResult(full.cachedTranscript);
+        const parsed = TennisVocabParser.parse(full.cachedTranscript, full.markers || []);
+        setParsedPoints(parsed.points);
+        setStage("done");
+      }
+    }).catch(() => {});
+  }, []);
+
+  const handleStart = async () => {
+    setStage("uploading");
+    setError(null);
+    try {
+      const full = await AudioStorage.get(recording.id);
+      if (!full || !full.blob) throw new Error("Recording data not found");
+      const transcript = await WhisperClient.transcribe(full.blob, TennisVocabParser.WHISPER_PROMPT, (p) => {
+        setStage(p.stage);
+        setProgress(p.percent || 0);
+      });
+      // Cache the transcript for free re-parsing
+      await AudioStorage.save({ ...full, cachedTranscript: transcript });
+      const parsed = TennisVocabParser.parse(transcript, full.markers || []);
+      setResult(transcript);
+      setParsedPoints(parsed.points);
+      setStage("done");
+    } catch(e) {
+      setError(e.message);
+      setStage("error");
+    }
+  };
+
+  const handleReparse = async () => { setReparseMsg("Re-parsing...");
+    if (!result) return;
+    const full = await AudioStorage.get(recording.id);
+    const parsed = TennisVocabParser.parse(result, full && full.markers || []);
+    setParsedPoints(parsed.points); setReparseMsg("✓ Re-parsed: " + parsed.points.length + " points"); setTimeout(() => setReparseMsg(null), 3000); };
+
+  const handleImport = () => setShowSetupForm(true);
+  const handleSetupConfirm = (formData) => {
+    setShowSetupForm(false);
+    onImport({ ...formData, parsedPoints: parsedPoints, recording: recording });
+  };
+
+  const fmtTime = (s) => { const m = Math.floor(s/60), sec = Math.floor(s%60); return m + ":" + String(sec).padStart(2,"0"); };
+
+  return React.createElement('div', { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },}
+    , React.createElement('div', { style: { background: T.card, borderRadius: 16, padding: 24, maxWidth: 800, width: "100%", maxHeight: "90vh", display: "flex", flexDirection: "column", border: "2px solid " + T.accent },}
+      , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },}
+        , React.createElement('div', null
+          , React.createElement('div', { style: { fontSize: 18, fontWeight: 900, color: T.text },}, "🤖 Transcribe & Tag")
+          , React.createElement('div', { style: { fontSize: 11, color: T.textMuted },}, recording.name, " · ", fmtTime(recording.duration))
+        )
+        , React.createElement('button', { onClick: onClose, style: { background: "transparent", border: "1px solid " + T.border, color: T.textMuted, borderRadius: 6, padding: "4px 10px", cursor: "pointer" },}, "✕")
+      )
+      , stage === "ready" && React.createElement('div', { style: { textAlign: "center", padding: 30 },}
+        , React.createElement('div', { style: { fontSize: 48, marginBottom: 12 },}, "🎤→🤖→🏷️")
+        , React.createElement('div', { style: { fontSize: 13, color: T.textMuted, marginBottom: 20, lineHeight: 1.6 },}
+          , "Whisper will transcribe this recording (~$" + (recording.duration / 60 * 0.006).toFixed(2) + " estimated cost).", React.createElement('br', null)
+          , "Then the tennis vocabulary parser will extract tagged points from the transcript."
+        )
+        , !WhisperClient.hasKey() && React.createElement('div', { style: { padding: "10px 14px", borderRadius: 8, background: DANGER + "15", border: "1px solid " + DANGER, color: DANGER, fontSize: 12, marginBottom: 16 },}, "⚠ No API key set. Open ⚙️ Settings first.")
+        , React.createElement('button', { onClick: handleStart, disabled: !WhisperClient.hasKey(), style: { padding: "14px 32px", borderRadius: 10, fontSize: 15, fontWeight: 800, cursor: WhisperClient.hasKey() ? "pointer" : "not-allowed", border: "2px solid #52c41a", background: "#52c41a25", color: "#52c41a", opacity: WhisperClient.hasKey() ? 1 : 0.4 },}, "🤖 Start Transcription")
+      )
+      , (stage === "uploading" || stage === "processing") && React.createElement('div', { style: { textAlign: "center", padding: 30 },}
+        , React.createElement('div', { style: { fontSize: 36, marginBottom: 12 },}, stage === "uploading" ? "📤" : "🤖")
+        , React.createElement('div', { style: { fontSize: 14, color: T.text, marginBottom: 16, fontWeight: 700 },}, stage === "uploading" ? "Uploading audio to OpenAI..." : "Whisper is transcribing... (this can take 1-3 minutes for long recordings)")
+        , React.createElement('div', { style: { height: 8, background: T.border, borderRadius: 4, overflow: "hidden", maxWidth: 400, margin: "0 auto" },}
+          , React.createElement('div', { style: { height: "100%", width: progress + "%", background: "#52c41a", transition: "width 0.3s" },})
+        )
+      )
+      , stage === "error" && React.createElement('div', { style: { padding: 20, background: DANGER + "15", border: "1px solid " + DANGER, borderRadius: 8, color: DANGER, fontSize: 13 },}, "⚠ " + error)
+      , stage === "done" && result && React.createElement('div', { style: { flex: 1, overflowY: "auto" },}
+        , React.createElement('div', { style: { padding: "10px 14px", background: "#52c41a15", border: "1px solid #52c41a", borderRadius: 8, color: "#52c41a", fontSize: 12, marginBottom: 12, fontWeight: 700 },}, "✓ Transcribed " + Math.round(result.duration || 0) + "s of audio · Extracted " + parsedPoints.length + " points")
+        , React.createElement('div', { style: { display: "flex", gap: 8, marginBottom: 12 },}
+          , parsedPoints.length > 0 && React.createElement('button', { onClick: handleImport, style: { flex: 1, padding: "12px 0", borderRadius: 10, fontSize: 14, fontWeight: 800, cursor: "pointer", border: "2px solid #52c41a", background: "#52c41a25", color: "#52c41a" },}, "📥 Import to Match (" + parsedPoints.length + ")")
+          , React.createElement('button', { onClick: handleReparse, style: { padding: "12px 16px", borderRadius: 10, fontSize: 13, fontWeight: 800, cursor: "pointer", border: "2px solid #5abaff", background: "#5abaff25", color: "#5abaff" },}, "🔄 Re-parse")
+        )
+
+        /* Full transcript viewer with copy/download */
+        , React.createElement('div', { style: { marginBottom: 16, padding: 12, background: T.bgDeep, borderRadius: 8, border: "1px solid " + T.border },}
+          , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 },}
+            , React.createElement('div', { style: { fontSize: 11, color: T.textMuted, fontWeight: 700, letterSpacing: 1 },}, "📄 FULL TRANSCRIPT (" + (result.text || "").length + " chars)")
+            , React.createElement('div', { style: { display: "flex", gap: 6 },}
+              , React.createElement('button', { onClick: () => {
+                navigator.clipboard.writeText(result.text || "").then(() => alert("Transcript copied to clipboard!")).catch(() => {
+                  // Fallback: select the textarea
+                  const ta = document.getElementById("transcript-area");
+                  if (ta) { ta.select(); document.execCommand("copy"); alert("Transcript copied!"); }
+                });
+              }, style: { padding: "4px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer", border: "1px solid " + T.accent, background: T.accent + "20", color: T.accent },}, "📋 Copy")
+              , React.createElement('button', { onClick: () => {
+                const blob = new Blob([result.text || ""], { type: "text/plain" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = recording.name + "_transcript.txt";
+                a.click();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+              }, style: { padding: "4px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer", border: "1px solid #5abaff", background: "#5abaff20", color: "#5abaff" },}, "⬇ Download .txt")
+              , React.createElement('button', { onClick: () => {
+                const json = JSON.stringify({ text: result.text, words: result.words, segments: result.segments, duration: result.duration }, null, 2);
+                const blob = new Blob([json], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = recording.name + "_whisper.json";
+                a.click();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+              }, style: { padding: "4px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer", border: "1px solid #f4d35e", background: "#f4d35e20", color: "#f4d35e" },}, "⬇ Download .json")
+            )
+          )
+          , React.createElement('textarea', { id: "transcript-area", readOnly: true, value: result.text || "", style: { width: "100%", minHeight: 120, maxHeight: 200, padding: 10, borderRadius: 6, border: "1px solid " + T.border, background: T.card, color: T.text, fontSize: 11, fontFamily: "monospace", boxSizing: "border-box", resize: "vertical" },})
+        )
+
+        , React.createElement('div', { style: { fontSize: 11, color: T.textMuted, fontWeight: 700, letterSpacing: 1, marginBottom: 6 },}, "EXTRACTED POINTS (" + parsedPoints.length + ")")
+        , parsedPoints.length === 0 ? React.createElement('div', { style: { padding: 16, background: T.bgDeep, borderRadius: 8, color: T.textMuted, fontSize: 12, textAlign: "center" },}, "No points extracted. Vocabulary may need expansion — check transcript above and share with developer.")
+        : parsedPoints.slice(0, 50).map(p => React.createElement('div', { key: p.id, style: { padding: "10px 14px", borderRadius: 8, border: "1px solid " + T.border, marginBottom: 6, background: T.card2 },}
+          , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },}
+            , React.createElement('div', { style: { fontSize: 11, fontWeight: 800, color: T.accent },}, "Point " + p.pointNum + " · " + fmtTime(p.startTime) + "→" + fmtTime(p.endTime))
+            , React.createElement('div', { style: { fontSize: 9, padding: "2px 6px", borderRadius: 4, background: p.confidence === "high" ? "#52c41a30" : p.confidence === "medium" ? "#f4d35e30" : DANGER + "30", color: p.confidence === "high" ? "#52c41a" : p.confidence === "medium" ? "#f4d35e" : DANGER, fontWeight: 700, textTransform: "uppercase" },}, p.confidence)
+          )
+          , React.createElement('div', { style: { fontSize: 11, color: T.textMuted, fontStyle: "italic", marginBottom: 6 },}, "\"" + p.text + "\"")
+          , Object.keys(p.tags).filter(k => !k.startsWith("_")).length === 0
+            ? React.createElement('div', { style: { fontSize: 10, color: DANGER, fontStyle: "italic" },}, "⚠ No tags matched — vocabulary needs expansion")
+            : React.createElement('div', { style: { display: "flex", flexWrap: "wrap", gap: 4 },}
+                , Object.entries(p.tags).filter(([k]) => !k.startsWith("_")).map(([k, v]) => React.createElement('span', { key: k, style: { fontSize: 10, padding: "2px 8px", borderRadius: 4, background: T.accent + "20", color: T.accent, fontWeight: 700 },}, k + ": " + v))
+              )
+        ))
+        , parsedPoints.length > 50 && React.createElement('div', { style: { fontSize: 10, color: T.textMuted, textAlign: "center", padding: 10 },}, "Showing first 50 of " + parsedPoints.length + " points")
+      )
+    )
+  );
+}
+
+
 // ─── VOICE TAGGING ENGINE ─────────────────────────────────────────────────────
 // Uses Web Speech API (webkitSpeechRecognition) for hands-free courtside tagging.
 // Supported on iPad Safari (requires internet for speech processing).
@@ -3641,6 +4675,20 @@ function App() {
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
   }, [points, score, matchTime, conditions, themeId, setup, superTieAt11, courtFlipped, tag, cloudUser]);
 
+  const handleImportAudioMatch = (data) => {
+    const setupData = { player1: data.p1Name, player2: data.p2Name, surface: data.surface, format: data.format, date: data.date, tournament: data.tournament, conditions: data.conditions, p1utr: data.p1utr, p2utr: data.p2utr, p1hand: data.p1hand, p2hand: data.p2hand };
+    const tagPoints = mapParsedToTagPoints(data.parsedPoints, data.p1Name, data.p2Name);
+    setSetup(setupData);
+    setConditions(setupData.conditions);
+    setSuperTieAt11(data.superTie || false);
+    setPoints(tagPoints);
+    setScore(rebuildScore(tagPoints, setupData.format, false));
+    setMatchTime({ start: Date.now(), end: null, pausedMs: 0, pausedAt: null });
+    setTag(EMPTY_TAG);
+    setTranscribingRec(null);
+    setTab('stats');
+  };
+
   const handleStart = (form) => {
     localStorage.removeItem("tennistag_session");
     setSetup(form);
@@ -3863,6 +4911,10 @@ function App() {
   };
 
   const [showHistory, setShowHistory] = useState(false);
+  const [showAudioRecorder, setShowAudioRecorder] = useState(false);
+  const [showLibrary, setShowLibrary] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [transcribingRec, setTranscribingRec] = useState(null);
 
   // ── KEYBOARD SHORTCUTS ─────────────────────────────────────────
   useEffect(() => {
@@ -4070,6 +5122,14 @@ function App() {
           T: T,}
         )
       )
+      /* Audio recorder modal */
+      , showAudioRecorder && React.createElement(MatchAudioRecorder, { onClose: () => setShowAudioRecorder(false), T: T,})
+      /* Recordings library modal */
+      , showLibrary && React.createElement(RecordingsLibraryModal, { onClose: () => setShowLibrary(false), onTranscribe: (r) => { setTranscribingRec(r); setShowLibrary(false); }, T: T,})
+      /* Settings modal */
+      , showSettings && React.createElement(SettingsModal, { onClose: () => setShowSettings(false), T: T,})
+      /* Transcription result modal */
+      , transcribingRec && React.createElement(TranscriptionResultModal, { recording: transcribingRec, onClose: () => setTranscribingRec(null), onImport: handleImportAudioMatch, T: T,})
       /* Match history modal */
       , showHistory && (
         React.createElement(MatchHistoryModal, {
@@ -4107,6 +5167,18 @@ function App() {
               cursor: "pointer", border: "1px solid " + T.border, background: "transparent",
               color: T.textMuted, fontFamily: T.fontBody },}, "Sign Out")
           )
+          , React.createElement('button', { onClick: () => setShowAudioRecorder(true), style: {
+            padding: "5px 12px", borderRadius: T.chipRadius || 8, fontSize: 11, fontWeight: 700,
+            cursor: "pointer", border: "1px solid #e63946", background: "#e6394615",
+            color: "#e63946", fontFamily: T.fontBody },}, "🎙️ Record Audio")
+          , React.createElement('button', { onClick: () => setShowLibrary(true), style: {
+            padding: "5px 12px", borderRadius: T.chipRadius || 8, fontSize: 11, fontWeight: 700,
+            cursor: "pointer", border: "1px solid #52c41a", background: "#52c41a15",
+            color: "#52c41a", fontFamily: T.fontBody },}, "🎵 Library")
+          , React.createElement('button', { onClick: () => setShowSettings(true), style: {
+            padding: "5px 10px", borderRadius: T.chipRadius || 8, fontSize: 11, fontWeight: 700,
+            cursor: "pointer", border: "1px solid " + T.border, background: T.card2,
+            color: T.textMuted, fontFamily: T.fontBody },}, "⚙️")
           , React.createElement('button', { onClick: () => setShowHistory(true), style: {
             padding: "5px 12px", borderRadius: T.chipRadius || 8, fontSize: 11, fontWeight: 700,
             cursor: "pointer", border: "1px solid " + T.border, background: T.card2,
