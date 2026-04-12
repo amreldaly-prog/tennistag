@@ -906,15 +906,20 @@ function pct(n, d) { return d ? Math.round((n / d) * 100) : 0; }
 function deriveServeSide(scorePoints) {
   const p1v = scorePoints.p1;
   const p2v = scorePoints.p2;
-  // Check if scores are numeric (tiebreak mode)
-  const p1n = Number(p1v);
-  const p2n = Number(p2v);
-  if (!isNaN(p1n) && !isNaN(p2n) && (p1n > 3 || p2n > 3 || (p1v !== "0" && p1v !== "15" && p1v !== "30" && p1v !== "40" && p1v !== "AD"))) {
-    // Numeric tiebreak scoring — total points determines side
-    const total = p1n + p2n;
-    return total % 2 === 0 ? "Deuce" : "Ad";
+  // Regular tennis scores - if values match these, use index-based math (NOT tiebreak)
+  const TENNIS_SCORES = ["0", "15", "30", "40", "AD"];
+  const isP1TennisScore = TENNIS_SCORES.includes(p1v);
+  const isP2TennisScore = TENNIS_SCORES.includes(p2v);
+  // Tiebreak mode: BOTH values must be numeric AND NEITHER is a regular tennis score string
+  if (!isP1TennisScore && !isP2TennisScore) {
+    const p1n = Number(p1v);
+    const p2n = Number(p2v);
+    if (!isNaN(p1n) && !isNaN(p2n)) {
+      const total = p1n + p2n;
+      return total % 2 === 0 ? "Deuce" : "Ad";
+    }
   }
-  // Regular game scoring
+  // Regular game scoring — use sequence indices
   const seq = ["0","15","30","40","AD"];
   const p1i = seq.indexOf(p1v);
   const p2i = seq.indexOf(p2v);
@@ -1001,6 +1006,46 @@ function detectPressurePoint(score, format) {
   return false;
 }
 
+// Returns specific pressure type string for a given score state (used for CSV export)
+// Priority: MatchPoint > SetPoint > BreakPoint > GamePoint > Deuce > ""
+function detectPressurePointType(score, format) {
+  if (!score || score.matchWinner) return "";
+  const { sets, games, points, server, superTieBreak, currentSet } = score;
+  const returner = server === "p1" ? "p2" : "p1";
+  const sp = points[server], rp = points[returner];
+  if (superTieBreak) {
+    const sn = Number(sp) || 0, rn = Number(rp) || 0;
+    if ((sn >= 9 && sn > rn) || (rn >= 9 && rn > sn)) return "MatchPoint";
+    return "";
+  }
+  const isBreakPoint = (rp === "40" && sp !== "40" && sp !== "AD") || (rp === "AD");
+  const isGamePoint = (sp === "40" && rp !== "40" && rp !== "AD") || (sp === "AD");
+  const isDeuce = (sp === "40" && rp === "40");
+  const target = getSetTarget(format);
+  const needed = setsNeeded(format);
+  const setsWon = (pid) => sets.filter((st, i) => i < currentSet && st[pid] > st[pid === "p1" ? "p2" : "p1"]).length;
+  // Check set point for both sides
+  const checkSetPt = (pid, canWin) => {
+    if (!canWin) return false;
+    const gP = games[pid], gO = games[pid === "p1" ? "p2" : "p1"];
+    if (gP >= target - 1 && gP >= gO && (gP - gO >= 1 || (gP === target - 1 && gO === target - 1))) {
+      if (gP === target - 1 && gO === target - 1) return false;
+      return true;
+    }
+    if (gP >= target && gP - gO >= 1) return true;
+    return false;
+  };
+  const serverSetPt = checkSetPt(server, isGamePoint);
+  const returnerSetPt = checkSetPt(returner, isBreakPoint);
+  // Match point = set point for someone with (needed-1) sets already won
+  if ((serverSetPt && setsWon(server) >= needed - 1) || (returnerSetPt && setsWon(returner) >= needed - 1)) return "MatchPoint";
+  if (serverSetPt || returnerSetPt) return "SetPoint";
+  if (isBreakPoint) return "BreakPoint";
+  if (isGamePoint) return "GamePoint";
+  if (isDeuce) return "Deuce";
+  return "";
+}
+
 function getSetTarget(format) {
   return (format === "Short Set (1st to 4)" || format === "Best of 3 Short Sets") ? 4 : 6;
 }
@@ -1024,6 +1069,22 @@ function rebuildScore(pts, fmt, superTieAt11, initialServer) {
     tieBreakServer: initialServer || "p1",  // who serves first in tiebreak
   };
   for (const p of pts) {
+    // ── GHOST CORRECTION POINT ──
+    // Synthetic point inserted by handleOverwriteApply. Snaps the running score to a corrected state.
+    // Not a real point — does not contribute to stats — only adjusts the running score state.
+    if (p._isCorrection && p._snapshot) {
+      const snap = p._snapshot;
+      sc.sets = snap.sets.map(s => ({ p1: s.p1 || 0, p2: s.p2 || 0 }));
+      sc.games = { p1: snap.games.p1 || 0, p2: snap.games.p2 || 0 };
+      sc.points = { p1: snap.points.p1, p2: snap.points.p2 };
+      sc.currentSet = snap.currentSet != null ? snap.currentSet : (sc.sets.length - 1);
+      sc.server = snap.server || sc.server;
+      sc.tieBreak = !!snap.tieBreak;
+      sc.superTieBreak = !!snap.superTieBreak;
+      sc.tieBreakPts = snap.tieBreakPts || 0;
+      sc.tieBreakServer = snap.tieBreakServer || sc.tieBreakServer;
+      continue; // do not process as a regular point
+    }
     const winner = p.pointWinner;
     if (!winner || sc.matchWinner) continue;
     const loser = winner === "p1" ? "p2" : "p1";
@@ -1143,7 +1204,9 @@ function rebuildScore(pts, fmt, superTieAt11, initialServer) {
 }
 
 // ─── STATS CALCULATIONS ───────────────────────────────────────────────────────
-function calcStats(points) {
+function calcStats(rawPoints) {
+  // Filter out ghost correction points — they're for score state only, not real points
+  const points = (rawPoints || []).filter(p => !p._isCorrection);
   if (!points.length) return null;
   const total = points.length;
   const p1pts = points.filter(p => p.pointWinner === "p1").length;
@@ -1227,18 +1290,31 @@ function calcStats(points) {
 }
 
 // ─── CSV EXPORT ───────────────────────────────────────────────────────────────
-function exportCSV(points, setup) {
+function exportCSV(rawPoints, setup) {
+  // Filter out ghost correction points — they're score-state-only, not real points
+  const points = (rawPoints || []).filter(p => !p._isCorrection);
   // CSV — verified field order (one row per point, all fields)
   const hdrs = [
-    "Pt#", "Timestamp", "ElapsedMin", "Set", "GameScore", "PointScore",
+    "MatchID", "PointID",
+    "Pt#", "Timestamp", "ElapsedMin", "SetNumber", "GameScore", "PointScore",
     "Server", "ServerUTR", "ServerHand",
-    "ServeSide", "ServeType", "ServeSpin", "ServeZone", "ServeFault",
+    "ServeSide", "ServeType", "ServeSpin", "ServeZone",
+    "FirstServeFaultType", "FirstServeFaultZone",
+    "ServeFault", "DfFaultType",
     "ReturnHand", "ReturnPosition", "ReturnLandZone", "ReturnLandAbsolute",
     "Serve+1Shot", "Serve+1Dir", "Return+1Shot", "Return+1Dir",
     "RallyLength", "Outcome", "ErrorShot", "ErrorDirection", "WinningShot",
-    "NetApproach", "PressurePoint",
+    "NetApproach", "PressurePoint", "PressurePointType",
+    "PointEndedBy",
     "PointWinner", "WinnerUTR", "WinnerHand"
   ];
+  // Trim whitespace from player names for data consistency
+  const p1Name = (setup.player1 || "").trim();
+  const p2Name = (setup.player2 || "").trim();
+  // Build a stable MatchID: date + player initials (e.g. "2026-04-11_YE_TS")
+  const today = (setup.date || new Date().toISOString().slice(0,10)).slice(0,10);
+  const initials = (name) => (name || "").split(/\s+/).filter(Boolean).map(w => w[0] || "").join("").toUpperCase().slice(0,2) || "XX";
+  const matchID = today + "_" + initials(p1Name) + "_" + initials(p2Name);
   const matchStartTs = points.length > 0 && points[0].timestamp ? points[0].timestamp : 0;
   const rows = points.map((p, i) => {
     const isP1Server = p.server === "p1";
@@ -1250,19 +1326,23 @@ function exportCSV(points, setup) {
     const ts = p.timestamp ? new Date(p.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
     const elapsedMin = p.timestamp && matchStartTs ? Math.round((p.timestamp - matchStartTs) / 60000) : "";
     return [
+      matchID,
+      matchID + "_P" + (i + 1),
       i + 1,
       ts,
       elapsedMin,
       setNum,
       gameStr,
       ptsStr,
-      isP1Server ? setup.player1 : setup.player2,
+      isP1Server ? p1Name : p2Name,
       isP1Server ? (setup.p1utr || "") : (setup.p2utr || ""),
       isP1Server ? (setup.p1hand || "") : (setup.p2hand || ""),
       p.serveSide || "",
       p.serveType || "",
       p.serveSpin || "",
       p.serveZone || "",
+      (p.firstServeFaultType && p.firstServeFaultType !== "?") ? p.firstServeFaultType : "",
+      p.firstServeFaultZone || "",
       (p.serveFault && p.serveFault !== "?") ? p.serveFault : "",
       p.dfFaultType || "",
       p.returnHand || "",
@@ -1280,7 +1360,18 @@ function exportCSV(points, setup) {
       p.shotType || "",
       p.netApproach ? "Yes" : "No",
       p.pressurePoint ? "Yes" : "No",
-      isP1Winner ? setup.player1 : setup.player2,
+      p.pressurePointType || "",
+      // PointEndedBy = the player who hit the final shot
+      // Winner/Ace → pointWinner; Error/DF → the losing player (they hit the final shot into net/out)
+      (function() {
+        if (!p.outcome) return "";
+        const w = isP1Winner ? p1Name : p2Name;
+        const l = isP1Winner ? p2Name : p1Name;
+        if (p.outcome === "Winner" || p.outcome === "Ace" || p.outcome === "Return Winner") return w;
+        if (p.outcome.includes("Error") || p.outcome === "Double Fault") return l;
+        return "";
+      })(),
+      isP1Winner ? p1Name : p2Name,
       isP1Winner ? (setup.p1utr || "") : (setup.p2utr || ""),
       isP1Winner ? (setup.p1hand || "") : (setup.p2hand || ""),
     ].map(v => { const s = String(v); return s.includes(",") || s.includes('"') || s.includes("\n") ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(",");
@@ -1697,22 +1788,17 @@ function exportPDF(points, setup, score, matchTime, conditions) {
   const duration = matchTime.start && matchTime.end ? fmtDuration(matchTime.end - matchTime.start) : "In progress";
   const pct = (n, d) => d ? Math.round((n / d) * 100) + "%" : "—";
 
-  // Zone heatmap table — no nested template literals
+  // Zone heatmap table — 3 zones (Wide/Body/T), no depth split
   function zoneTable(zones, side) {
     const ltr = side === "Ad" ? ["T","Body","Wide"] : ["Wide","Body","T"];
-    const max = Math.max(1, ...Object.values(zones));
+    const max = Math.max(1, ...Object.values(zones).map(v => Number(v) || 0), 1);
     let headerCells = ltr.map(c => "<th>" + c + "</th>").join("");
-    let deepCells = ltr.map(c => {
-      const v = zones[c + "-Deep"] || 0;
+    let cells = ltr.map(c => {
+      const v = zones[c] || 0;
       const alpha = (0.08 + (v/max) * 0.8).toFixed(2);
-      return "<td style='background:rgba(244,211,94," + alpha + ");font-weight:" + (v/max > 0.4 ? 700 : 400) + "'>" + v + "<br><small>Deep</small></td>";
+      return "<td style='background:rgba(244,211,94," + alpha + ");font-weight:" + (v/max > 0.4 ? 700 : 400) + ";padding:10px;text-align:center;font-size:16px'>" + v + "</td>";
     }).join("");
-    let midCells = ltr.map(c => {
-      const v = zones[c + "-Mid"] || 0;
-      const alpha = (0.08 + (v/max) * 0.8).toFixed(2);
-      return "<td style='background:rgba(244,211,94," + alpha + ");font-weight:" + (v/max > 0.4 ? 700 : 400) + "'>" + v + "<br><small>Mid</small></td>";
-    }).join("");
-    return "<table class='zone-table'><thead><tr><th colspan='3'>" + side + " Side</th></tr><tr>" + headerCells + "</tr></thead><tbody><tr>" + deepCells + "</tr><tr>" + midCells + "</tr></tbody></table>";
+    return "<table class='zone-table'><thead><tr><th colspan='3'>" + side + " Side</th></tr><tr>" + headerCells + "</tr></thead><tbody><tr>" + cells + "</tr></tbody></table>";
   }
 
   function retZoneTable(zones) {
@@ -1809,6 +1895,9 @@ function exportPDF(points, setup, score, matchTime, conditions) {
     ".zone-table th{background:#2d6a4f;color:#fff;padding:4px;text-align:center;font-size:10px}",
     ".zone-table td{padding:7px 3px;text-align:center;border:1px solid #ddd}",
     ".zone-table small{display:block;font-size:8px;color:#999}",
+    ".mini{width:100%;border-collapse:collapse;font-size:10px;margin-bottom:6px}",
+    ".mini th{background:#2d6a4f;color:#fff;padding:4px;text-align:center;font-size:10px}",
+    ".mini td{padding:4px 6px;text-align:center;border:1px solid #ddd}",
     ".bp-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}",
     ".bp-box{border:1px solid #ddd;border-radius:7px;padding:9px 11px}",
     ".bp-row{display:flex;justify-content:space-between;font-size:10px;padding:2px 0;border-bottom:1px solid #f5f5f5}",
@@ -1857,30 +1946,132 @@ function exportPDF(points, setup, score, matchTime, conditions) {
   if (!stats) {
     html += "<p>No points logged.</p>";
   } else {
-    // Match stats
-    html += "<h2>Match Statistics</h2>";
-    html += "<div style='display:flex;justify-content:space-between;margin-bottom:5px'><span style='font-weight:800;color:#28a050;font-size:12px'>" + player1 + "</span><span style='font-size:10px;color:#888'>" + stats.total + " pts</span><span style='font-weight:800;color:#8840c0;font-size:12px'>" + player2 + "</span></div>";
-    html += "<table class='st'><tbody>";
-    html += statRow("Points Won", stats.p1pts, stats.p2pts);
-    html += statRow("Winners", stats.p1winners, stats.p2winners);
-    html += statRow("Unforced Errors", stats.p1ue, stats.p2ue);
-    html += statRow("Aces", stats.p1serve.aces, stats.p2serve.aces);
-    html += statRow("Double Faults", stats.p1serve.dfs, stats.p2serve.dfs);
-    html += statRow("1st Serve In %", pct(stats.p1serve.firstIn, stats.p1serve.total) + "%", pct(stats.p2serve.firstIn, stats.p2serve.total) + "%");
-    html += statRow("1st Serve Won %", pct(stats.p1serve.firstWon, stats.p1serve.firstIn), pct(stats.p2serve.firstWon, stats.p2serve.firstIn));
-    html += statRow("2nd Serve Won %", pct(stats.p1serve.secondWon, stats.p1serve.secondIn), pct(stats.p2serve.secondWon, stats.p2serve.secondIn));
-    html += statRow("Net Approaches", stats.netP1.length, stats.netP2.length);
-    html += statRow("Net Points Won", stats.netP1.filter(p=>p.pointWinner==="p1").length, stats.netP2.filter(p=>p.pointWinner==="p2").length);
-    if (stats.p1sv.total > 0 || stats.p2sv.total > 0) {
-      html += statRow("Serve & Volley", stats.p1sv.total, stats.p2sv.total);
-      html += statRow("S&V Won %", pct(stats.p1sv.won, stats.p1sv.total) + "%", pct(stats.p2sv.won, stats.p2sv.total) + "%");
+    // ── Per-set Match Statistics breakdown ──
+    // Collect unique set numbers from points
+    const setsInMatch = [];
+    points.forEach(p => {
+      const sn = p.scoreSnapshot && p.scoreSnapshot.setNum;
+      if (sn && !setsInMatch.includes(sn)) setsInMatch.push(sn);
+    });
+    setsInMatch.sort((a, b) => a - b);
+
+    // Helper: render a Match Statistics table for a given filtered point set
+    function statsTable(filteredPts, label) {
+      const s = calcStats(filteredPts);
+      if (!s) return "";
+      let h = "<h2>" + label + "</h2>";
+      h += "<div style='display:flex;justify-content:space-between;margin-bottom:5px'><span style='font-weight:800;color:#28a050;font-size:12px'>" + player1 + "</span><span style='font-size:10px;color:#888'>" + s.total + " pts</span><span style='font-weight:800;color:#8840c0;font-size:12px'>" + player2 + "</span></div>";
+      h += "<table class='st'><tbody>";
+      h += statRow("Points Won", s.p1pts, s.p2pts);
+      h += statRow("Winners", s.p1winners, s.p2winners);
+      h += statRow("Unforced Errors", s.p1ue, s.p2ue);
+      h += statRow("Aces", s.p1serve.aces, s.p2serve.aces);
+      h += statRow("Double Faults", s.p1serve.dfs, s.p2serve.dfs);
+      h += statRow("1st Serve In %", pct(s.p1serve.firstIn, s.p1serve.total), pct(s.p2serve.firstIn, s.p2serve.total));
+      h += statRow("1st Serve Won %", pct(s.p1serve.firstWon, s.p1serve.firstIn), pct(s.p2serve.firstWon, s.p2serve.firstIn));
+      h += statRow("2nd Serve Won %", pct(s.p1serve.secondWon, s.p1serve.secondIn), pct(s.p2serve.secondWon, s.p2serve.secondIn));
+      h += statRow("Net Approaches", s.netP1.length, s.netP2.length);
+      h += statRow("Net Points Won", s.netP1.filter(p=>p.pointWinner==="p1").length, s.netP2.filter(p=>p.pointWinner==="p2").length);
+      if (s.p1sv.total > 0 || s.p2sv.total > 0) {
+        h += statRow("Serve & Volley", s.p1sv.total, s.p2sv.total);
+        h += statRow("S&V Won %", pct(s.p1sv.won, s.p1sv.total), pct(s.p2sv.won, s.p2sv.total));
+      }
+      h += "</tbody></table>";
+      return h;
     }
-    html += "</tbody></table>";
+
+    // Render per-set tables if there's more than one set of data
+    if (setsInMatch.length > 1) {
+      setsInMatch.forEach(sn => {
+        const setPts = points.filter(p => p.scoreSnapshot && p.scoreSnapshot.setNum === sn);
+        html += statsTable(setPts, "Set " + sn + " Statistics");
+      });
+    }
+
+    // Full match statistics (always shown)
+    html += statsTable(points, setsInMatch.length > 1 ? "Full Match Statistics" : "Match Statistics");
 
     // Serve zones
     html += "<h2>Serve Landing Zones</h2>";
     html += "<h3>" + player1 + "</h3><div class='zg'>" + zoneTable(stats.p1serve.deuceZones,"Deuce") + zoneTable(stats.p1serve.adZones,"Ad") + "</div>";
     html += "<h3>" + player2 + "</h3><div class='zg'>" + zoneTable(stats.p2serve.deuceZones,"Deuce") + zoneTable(stats.p2serve.adZones,"Ad") + "</div>";
+
+    // Serve faults by side
+    function faultBySide(pid, sideName) {
+      const filter = (p) => p.server === pid && p.serveSide === sideName &&
+        ((p.serveFault && p.serveFault !== "?") || p.firstServeFaultType);
+      const pts = points.filter(filter);
+      const counts = { Net: 0, Long: 0, Wide: 0, "Foot Fault": 0 };
+      pts.forEach(p => {
+        const ft = p.firstServeFaultType || p.serveFault;
+        if (ft && counts[ft] !== undefined) counts[ft]++;
+      });
+      return "<table class='mini'><tr><th colspan='5'>" + sideName + " Faults</th></tr><tr><th>Net</th><th>Long</th><th>Wide</th><th>Foot</th><th>Total</th></tr><tr><td>" + counts.Net + "</td><td>" + counts.Long + "</td><td>" + counts.Wide + "</td><td>" + counts["Foot Fault"] + "</td><td><b>" + pts.length + "</b></td></tr></table>";
+    }
+    html += "<h2>Serve Faults by Side</h2>";
+    html += "<h3>" + player1 + "</h3><div class='zg'>" + faultBySide("p1","Deuce") + faultBySide("p1","Ad") + "</div>";
+    html += "<h3>" + player2 + "</h3><div class='zg'>" + faultBySide("p2","Deuce") + faultBySide("p2","Ad") + "</div>";
+
+    // Shot type breakdowns: Winners, Errors, Serve+1, Return+1
+    function shotBreakdown(pid, title, field, filterOutcome) {
+      const pts = points.filter(p => p.pointWinner === pid && (!filterOutcome || filterOutcome(p)) && p[field]);
+      const counts = {};
+      pts.forEach(p => { counts[p[field]] = (counts[p[field]] || 0) + 1; });
+      const sorted = Object.entries(counts).sort((a,b) => b[1] - a[1]);
+      if (!sorted.length) return "<p style='color:#888;font-size:10px'>No data</p>";
+      return "<table class='mini'><tr><th>" + title + "</th><th>Count</th></tr>" +
+        sorted.map(([k,v]) => "<tr><td>" + k + "</td><td><b>" + v + "</b></td></tr>").join("") + "</table>";
+    }
+    // Collect error shots regardless of point winner (errors are hit by the losing player)
+    function errorShotBreakdown(pid) {
+      // errors by this player (the one who hit the ball into net/out)
+      const pts = points.filter(p => p.errorShot && p.outcome && p.outcome.includes("Error") &&
+        p.pointWinner !== pid); // p1 error → p2 won the point
+      const counts = {};
+      pts.forEach(p => { counts[p.errorShot] = (counts[p.errorShot] || 0) + 1; });
+      const sorted = Object.entries(counts).sort((a,b) => b[1] - a[1]);
+      if (!sorted.length) return "<p style='color:#888;font-size:10px'>No data</p>";
+      return "<table class='mini'><tr><th>Error Shot</th><th>Count</th></tr>" +
+        sorted.map(([k,v]) => "<tr><td>" + k + "</td><td><b>" + v + "</b></td></tr>").join("") + "</table>";
+    }
+    html += "<h2>Winners by Shot Type</h2><div class='zg'>";
+    html += "<div><h3>" + player1 + "</h3>" + shotBreakdown("p1","Winning Shot","shotType", p => p.outcome === "Winner") + "</div>";
+    html += "<div><h3>" + player2 + "</h3>" + shotBreakdown("p2","Winning Shot","shotType", p => p.outcome === "Winner") + "</div>";
+    html += "</div>";
+
+    html += "<h2>Errors by Shot Type</h2><div class='zg'>";
+    html += "<div><h3>" + player1 + "</h3>" + errorShotBreakdown("p1") + "</div>";
+    html += "<div><h3>" + player2 + "</h3>" + errorShotBreakdown("p2") + "</div>";
+    html += "</div>";
+
+    // Serve+1 and Return+1 shot breakdowns (with error indicator)
+    function plusOneBreakdown(pid, field) {
+      // For servePlusOne: pid is the server. For returnPlusOne: pid is the returner (opposite server)
+      const targetServer = field === "servePlusOne" ? pid : (pid === "p1" ? "p2" : "p1");
+      const pts = points.filter(p => p.server === targetServer && p[field]);
+      const counts = {};
+      const errors = {};
+      pts.forEach(p => {
+        const shot = p[field];
+        counts[shot] = (counts[shot] || 0) + 1;
+        // An error on the +1 shot: the point was lost by pid AND outcome includes Error
+        if (p.outcome && p.outcome.includes("Error") && p.pointWinner !== pid) {
+          errors[shot] = (errors[shot] || 0) + 1;
+        }
+      });
+      const sorted = Object.entries(counts).sort((a,b) => b[1] - a[1]);
+      if (!sorted.length) return "<p style='color:#888;font-size:10px'>No data</p>";
+      return "<table class='mini'><tr><th>Shot</th><th>Total</th><th>Errors</th></tr>" +
+        sorted.map(([k,v]) => "<tr><td>" + k + "</td><td><b>" + v + "</b></td><td style='color:#c0392b'>" + (errors[k] || 0) + "</td></tr>").join("") + "</table>";
+    }
+    html += "<h2>Serve+1 Shot Types</h2><div class='zg'>";
+    html += "<div><h3>" + player1 + "</h3>" + plusOneBreakdown("p1","servePlusOne") + "</div>";
+    html += "<div><h3>" + player2 + "</h3>" + plusOneBreakdown("p2","servePlusOne") + "</div>";
+    html += "</div>";
+    html += "<h2>Return+1 Shot Types</h2><div class='zg'>";
+    html += "<div><h3>" + player1 + "</h3>" + plusOneBreakdown("p1","returnPlusOne") + "</div>";
+    html += "<div><h3>" + player2 + "</h3>" + plusOneBreakdown("p2","returnPlusOne") + "</div>";
+    html += "</div>";
 
     // Return zones
     html += "<h2>Return Landing Zones</h2>";
@@ -2435,6 +2626,7 @@ function ScoreOverwriteModal({ setup, score, onApply, onClose, T = THEMES.origin
 const EMPTY_TAG = {
   serveType: null, serveSpin: null, serveSide: null, serveZone: null, serveFault: null,
   dfFaultType: null,
+  firstServeFaultType: null, firstServeFaultZone: null,
   returnHand: null, returnPosition: null, returnLandZone: null,
   servePlusOne: null, sp1Dir: null,
   returnPlusOne: null, rp1Dir: null,
@@ -2989,7 +3181,7 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast
           React.createElement('button', {
             style: { ...s.btn(tag.serveFault && tag.serveFault !== "?" ? DANGER : "#3a1a1a", !tag.serveFault || tag.serveFault === "?"), flex: 2, padding: fw ? "16px 0" : "12px 0", fontSize: fw ? 18 : 15 },
             disabled: !tag.serveFault || tag.serveFault === "?",
-            onClick: () => setTag(() => ({ ...EMPTY_TAG, serveType: "2nd Serve", serveSide: tag.serveSide })),}, "⚡ Fault → 2nd Serve"
+            onClick: () => setTag(() => ({ ...EMPTY_TAG, serveType: "2nd Serve", serveSide: tag.serveSide, firstServeFaultType: tag.serveFault, firstServeFaultZone: tag.serveZone })),}, "⚡ Fault → 2nd Serve"
 
           )
         ) : (
@@ -3010,7 +3202,12 @@ function PointLog({ points, setup }) {
       , React.createElement('div', { style: { fontSize: 11, color: MUTED, marginBottom: 5, fontWeight: 700 },}, points.length, " points logged"  )
       , !points.length && React.createElement('div', { style: { textAlign: "center", color: MUTED, marginTop: 40, fontSize: 13 },}, "No points logged yet."   )
       , [...points].reverse().map((p, i) => (
-        React.createElement('div', { key: p.id, style: { display: "grid", gridTemplateColumns: "20px 60px 40px 34px 40px 40px 60px 60px 18px 18px", gap: 3, alignItems: "center", padding: "5px 5px", borderRadius: 5, marginBottom: 2, background: i % 2 === 0 ? CARD2 : "transparent", fontSize: 11, color: MUTED },}
+        p._isCorrection
+          ? React.createElement('div', { key: p.id, style: { padding: "6px 10px", marginBottom: 2, borderRadius: 5, background: "#5abaff15", border: "1px solid #5abaff40", fontSize: 11, color: "#5abaff", fontWeight: 700, display: "flex", alignItems: "center", gap: 8 },}
+              , React.createElement('span', null, "📝")
+              , React.createElement('span', { style: { flex: 1 },}, p._correctionLabel || "Score corrected")
+            )
+          : React.createElement('div', { key: p.id, style: { display: "grid", gridTemplateColumns: "20px 60px 40px 34px 40px 40px 60px 60px 18px 18px", gap: 3, alignItems: "center", padding: "5px 5px", borderRadius: 5, marginBottom: 2, background: i % 2 === 0 ? CARD2 : "transparent", fontSize: 11, color: MUTED },}
           , React.createElement('span', { style: { color: ACCENT, fontWeight: 700 },}, points.length - i)
           , React.createElement('span', { style: { color: WHITE, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },}, getName(p.server))
           , React.createElement('span', null, _optionalChain([p, 'access', _5 => _5.serveType, 'optionalAccess', _6 => _6.replace, 'call', _7 => _7(" Serve","")]))
@@ -3186,8 +3383,8 @@ function StatsScreen({ points, setup, score, matchTime }) {
             )
             , React.createElement('div', { style: { ...s.statCard, marginBottom: 10 },}
               , ["Forehand","Backhand"].map(hand => {
-                const p1c = points.filter(p => p.server === "p2" && p.returnHand === hand).length;
-                const p2c = points.filter(p => p.server === "p1" && p.returnHand === hand).length;
+                const p1c = filteredPoints.filter(p => p.server === "p2" && p.returnHand === hand).length;
+                const p2c = filteredPoints.filter(p => p.server === "p1" && p.returnHand === hand).length;
                 return React.createElement(BarStat, { key: hand, label: hand + " Return", p1: p1c, p2: p2c,} );
               })
             )
@@ -4717,6 +4914,7 @@ function App() {
     if (!autoW) return; // still need a point winner
     // ── Auto-detect pressure point from current score ──
     const autoPressure = detectPressurePoint(score, setup.format);
+    const autoPressureType = detectPressurePointType(score, setup.format);
     const newPoint = {
       ...tag,
       id: Date.now() + "-" + points.length,
@@ -4726,6 +4924,7 @@ function App() {
       pointWinner: autoW,
       rallyLength: autoR,
       pressurePoint: tag.pressurePoint || autoPressure,
+      pressurePointType: autoPressureType,
       // Map relative return zone → absolute court position
       returnLandAbsolute: (function() {
         const rz = tag.returnLandZone;
@@ -4864,7 +5063,36 @@ function App() {
   };
 
   const handleOverwriteApply = (correctedScore) => {
-    setScore(correctedScore);
+    // Insert a synthetic "correction" ghost point that snaps the score to the corrected state.
+    // This persists through subsequent rebuildScore() calls because the snapshot lives inside the points array.
+    const ghost = {
+      _isCorrection: true,
+      _snapshot: {
+        sets: correctedScore.sets,
+        games: correctedScore.games,
+        points: correctedScore.points,
+        currentSet: correctedScore.currentSet,
+        server: correctedScore.server,
+        tieBreak: correctedScore.tieBreak,
+        superTieBreak: correctedScore.superTieBreak,
+        tieBreakPts: correctedScore.tieBreakPts,
+        tieBreakServer: correctedScore.tieBreakServer,
+      },
+      id: "correction-" + Date.now(),
+      timestamp: Date.now(),
+      // Stored for log display
+      _correctionLabel: "Score corrected to " + correctedScore.points.p1 + "-" + correctedScore.points.p2,
+      // Empty fields so it doesn't interfere with stats functions that look at these
+      server: correctedScore.server,
+      pointWinner: null,
+      outcome: null,
+    };
+    setPoints(prev => {
+      const updated = [...prev, ghost];
+      const newScore = rebuildScore(updated, setup.format, superTieAt11, initialServer);
+      setScore(newScore);
+      return updated;
+    });
     setShowOverwrite(false);
   };
 
@@ -5377,7 +5605,12 @@ function App() {
             )
             , React.createElement('div', { style: { flex: 1, overflowY: "auto", padding: "3px 8px" },}
               , [...points].reverse().map((p, i) => (
-                React.createElement('div', { key: p.id, style: { display: "grid", gridTemplateColumns: "24px 80px 44px 38px 44px 56px 52px 40px 40px 40px 42px 62px 75px 20px 20px", gap: 2, alignItems: "center", padding: "5px 0", borderBottom: `1px solid #1e3a5f18`, fontSize: 10, color: MUTED },}
+                p._isCorrection
+                  ? React.createElement('div', { key: p.id, style: { padding: "6px 10px", marginBottom: 2, borderRadius: 5, background: "#5abaff15", border: "1px solid #5abaff40", fontSize: 11, color: "#5abaff", fontWeight: 700, display: "flex", alignItems: "center", gap: 8 },}
+                      , React.createElement('span', null, "📝")
+                      , React.createElement('span', { style: { flex: 1 },}, p._correctionLabel || "Score corrected")
+                    )
+                  : React.createElement('div', { key: p.id, style: { display: "grid", gridTemplateColumns: "24px 80px 44px 38px 44px 56px 52px 40px 40px 40px 42px 62px 75px 20px 20px", gap: 2, alignItems: "center", padding: "5px 0", borderBottom: `1px solid #1e3a5f18`, fontSize: 10, color: MUTED },}
                   , React.createElement('span', { style: { color: ACCENT, fontWeight: 700 },}, points.length - i)
                   , React.createElement('span', { style: { color: WHITE, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },}, p.server === "p1" ? setup.player1 : setup.player2)
                   , React.createElement('span', null, _optionalChain([p, 'access', _11 => _11.serveType, 'optionalAccess', _12 => _12.replace, 'call', _13 => _13(" Serve","")]) || "—")
