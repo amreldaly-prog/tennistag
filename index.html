@@ -1010,18 +1010,18 @@ function setsNeeded(format) {
   return 2;
 }
 
-function rebuildScore(pts, fmt, superTieAt11) {
+function rebuildScore(pts, fmt, superTieAt11, initialServer) {
   let sc = {
     sets: [{ p1: 0, p2: 0 }],
     games: { p1: 0, p2: 0 },
     points: { p1: "0", p2: "0" },
     currentSet: 0,
-    server: "p1",
+    server: initialServer || "p1",
     matchWinner: null,
     superTieBreak: false,
     tieBreak: false,       // regular tiebreak at 6-6
     tieBreakPts: 0,        // total points played in tiebreak (for server rotation)
-    tieBreakServer: "p1",  // who serves first in tiebreak
+    tieBreakServer: initialServer || "p1",  // who serves first in tiebreak
   };
   for (const p of pts) {
     const winner = p.pointWinner;
@@ -2668,10 +2668,29 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast
             )
           )
         )
+
+        /* Double Fault type — shows INLINE inside Serve section when DF outcome is selected */
+        , isDoubleFault && (
+          React.createElement('div', { style: { marginTop: fw ? 12 : 10, padding: fw ? 12 : 10, background: DANGER + "10", border: "2px solid " + DANGER + "60", borderRadius: 10 },}
+            , React.createElement('div', { style: { fontSize: fw ? 12 : 10, color: DANGER, fontWeight: 900, letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 },}, "⚡ Double Fault Type — select one" )
+            , React.createElement('div', { style: { display: "grid", gridTemplateColumns: fw ? "repeat(4, 1fr)" : "repeat(2, 1fr)", gap: fw ? 8 : 6 },}
+              , SERVE_FAULT_TYPES.map(ft => (
+                React.createElement('button', { key: "df-"+ft, onClick: () => setT("dfFaultType", tag.dfFaultType === ft ? null : ft),
+                  style: { padding: fw ? "16px 8px" : "12px 8px", borderRadius: 8, fontSize: fw ? 16 : 13, fontWeight: 800, cursor: "pointer",
+                    border: "2.5px solid " + (tag.dfFaultType === ft ? DANGER : "#5a2a2a"),
+                    background: tag.dfFaultType === ft ? DANGER : DANGER + "18",
+                    color: tag.dfFaultType === ft ? WHITE : "#e08080",
+                    letterSpacing: 0.5 },}
+                  , ft
+                )
+              ))
+            )
+          )
+        )
       )
 
-      /* ② RETURN */
-      , !inFaultMode && (
+      /* ② RETURN — hidden for 1st serve fault AND double fault (no return on DF) */
+      , !inFaultMode && !isDoubleFault && (
         React.createElement('div', { style: { ..._s.tagSection, background: T.bgDeep, borderBottom: "1px solid " + T.border },}
           , React.createElement(StepHeader, { num: "②", label: "Return", fontFamily: T.fontDisplay, color: "#5aff9a", large: fw,} )
           , React.createElement('div', { style: { marginBottom: 6 },}
@@ -2816,25 +2835,6 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast
                   , isAce || isReturnError ? (server === "p1" ? player1 : player2)
                     : (server === "p1" ? player2 : player1)
                 )
-              )
-            )
-          )
-
-          /* Double Fault type — LARGE buttons, appears immediately after DF selected */
-          , isDoubleFault && (
-            React.createElement('div', { style: { marginTop: fw ? 12 : 10, padding: fw ? 12 : 10, background: DANGER + "10", border: "2px solid " + DANGER + "60", borderRadius: 10 },}
-              , React.createElement('div', { style: { fontSize: fw ? 12 : 10, color: DANGER, fontWeight: 900, letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 },}, "⚡ Double Fault Type — select one"  )
-              , React.createElement('div', { style: { display: "grid", gridTemplateColumns: fw ? "repeat(4, 1fr)" : "repeat(2, 1fr)", gap: fw ? 8 : 6 },}
-                , SERVE_FAULT_TYPES.map(ft => (
-                  React.createElement('button', { key: ft, onClick: () => setT("dfFaultType", tag.dfFaultType === ft ? null : ft),
-                    style: { padding: fw ? "16px 8px" : "12px 8px", borderRadius: 8, fontSize: fw ? 16 : 13, fontWeight: 800, cursor: "pointer",
-                      border: "2.5px solid " + (tag.dfFaultType === ft ? DANGER : "#5a2a2a"),
-                      background: tag.dfFaultType === ft ? DANGER : DANGER + "18",
-                      color: tag.dfFaultType === ft ? WHITE : "#e08080",
-                      letterSpacing: 0.5 },}
-                    , ft
-                  )
-                ))
               )
             )
           )
@@ -4549,6 +4549,7 @@ function App() {
   const [points, setPoints] = useState([]);
   const [score, setScore] = useState(null);
   const [superTieAt11, setSuperTieAt11] = useState(false);
+  const [initialServer, setInitialServer] = useState("p1"); // who serves the very first point of the match
   const [showSuperTieModal, setShowSuperTieModal] = useState(false);
   const [matchTime, setMatchTime] = useState({ start: null, end: null });
   const [conditions, setConditions] = useState("");
@@ -4696,7 +4697,8 @@ function App() {
     setConditions(form.conditions || "");
     setSuperTieAt11(false);
     setShowSuperTieModal(false);
-    setScore(rebuildScore([], form.format, false));
+    setInitialServer("p1"); // Reset to default — user can swap after setup
+    setScore(rebuildScore([], form.format, false, "p1"));
     setPoints([]);
     setMatchTime({ start: Date.now(), end: null, pausedMs: 0, pausedAt: null });
     setTag(EMPTY_TAG);
@@ -4757,7 +4759,7 @@ function App() {
     // Use functional setter so we always operate on fresh state (critical after edits)
     setPoints(prev => {
       const updated = [...prev, newPoint];
-      const newScore = rebuildScore(updated, setup.format, superTieAt11);
+      const newScore = rebuildScore(updated, setup.format, superTieAt11, initialServer);
       setScore(newScore);
       // Detect 1-1 for super tie-break prompt
       if (canTriggerSuperTie(setup.format) && !superTieAt11 && !showSuperTieModal) {
@@ -4787,7 +4789,7 @@ function App() {
     setSuperTieAt11(useSuperTie);
     setShowSuperTieModal(false);
     // Rebuild score with the new super tie decision
-    setScore(rebuildScore(points, setup.format, useSuperTie));
+    setScore(rebuildScore(points, setup.format, useSuperTie, initialServer));
   };
 
   const [undoStack, setUndoStack] = useState([]);
@@ -4808,7 +4810,7 @@ function App() {
     const removed = points[points.length - 1];
     setPoints(prev => {
       const np = prev.slice(0, -1);
-      setScore(rebuildScore(np, setup.format, superTieAt11));
+      setScore(rebuildScore(np, setup.format, superTieAt11, initialServer));
       return np;
     });
     setUndoStack(prev => [...prev.slice(-4), removed]); // keep last 5
@@ -4819,7 +4821,7 @@ function App() {
     const restored = undoStack[undoStack.length - 1];
     setPoints(prev => {
       const np = [...prev, restored];
-      setScore(rebuildScore(np, setup.format, superTieAt11));
+      setScore(rebuildScore(np, setup.format, superTieAt11, initialServer));
       return np;
     });
     setUndoStack(prev => prev.slice(0, -1));
@@ -4831,7 +4833,7 @@ function App() {
     // Remove last point and rebuild score — use functional setter for consistency
     setPoints(prev => {
       const np = prev.slice(0, -1);
-      setScore(rebuildScore(np, setup.format, superTieAt11));
+      setScore(rebuildScore(np, setup.format, superTieAt11, initialServer));
       return np;
     });
     // Load the point's tag data back into the form for editing
@@ -4868,7 +4870,27 @@ function App() {
 
   const handleServerSwap = (newServer) => {
     if (!score || score.matchWinner) return;
-    setScore(prev => ({ ...prev, server: newServer }));
+    // Persist the initial server choice so rebuildScore respects it going forward.
+    // This works correctly when swap happens BEFORE any points are played,
+    // or when no games have been completed yet.
+    if (points.length === 0) {
+      // Pre-match swap — just update the initial server
+      setInitialServer(newServer);
+      setScore(prev => ({ ...prev, server: newServer, tieBreakServer: newServer }));
+      return;
+    }
+    // Mid-match swap — figure out which initialServer value would produce this server now
+    // Count completed games so far to determine the parity
+    const completedGames = (score.games.p1 || 0) + (score.games.p2 || 0) +
+      score.sets.slice(0, score.currentSet).reduce((sum, s) => sum + (s.p1 || 0) + (s.p2 || 0), 0);
+    // After N completed games, server has flipped N times from initialServer
+    // So if we want `newServer` to be serving now after N flips, initialServer should be:
+    //   (N even) → newServer
+    //   (N odd) → opposite of newServer
+    const desiredInitial = (completedGames % 2 === 0) ? newServer : (newServer === "p1" ? "p2" : "p1");
+    setInitialServer(desiredInitial);
+    // Rebuild the score with the new initial server so everything is consistent
+    setScore(rebuildScore(points, setup.format, superTieAt11, desiredInitial));
   };
 
   const [showEndConfirm, setShowEndConfirm] = useState(false);
