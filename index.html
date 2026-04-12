@@ -45,27 +45,27 @@ const SHOT_GROUPS = [
   {
     group: "Groundstrokes",
     color: "#1a5276",
-    shots: ["Forehand", "Backhand", "Slice Forehand", "Slice Backhand"],
+    shots: ["Forehand", "Backhand"],
   },
   {
-    group: "Serve & Return",
-    color: "#2d6a4f",
-    shots: ["Serve", "Return Forehand", "Return Backhand"],
+    group: "Slices",
+    color: "#2c6e91",
+    shots: ["Slice Forehand", "Slice Backhand"],
   },
   {
-    group: "Approach",
-    color: "#5b2c6f",
-    shots: ["Approach Forehand", "Approach Backhand"],
+    group: "Volleys",
+    color: "#0e4d6e",
+    shots: ["Volley Forehand", "Volley Backhand"],
   },
   {
     group: "Net",
-    color: "#0e4d6e",
-    shots: ["Volley Forehand", "Volley Backhand", "Overhead", "Half Volley"],
+    color: "#5b2c6f",
+    shots: ["Overhead", "Drop Shot", "Half Volley"],
   },
   {
-    group: "Specials",
+    group: "Special",
     color: "#6e2f10",
-    shots: ["Drop Shot", "Lob", "Tweener"],
+    shots: ["Approach Forehand", "Approach Backhand", "Lob", "Tweener"],
   },
 ];
 // Flat list for CSV / log references
@@ -2656,11 +2656,11 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast
               , inFaultMode ? "⚡ FAULT — choose type ↓" : "⚡ Mark as 1st Serve Fault"
             )
             , inFaultMode && (
-              React.createElement('div', { style: { marginTop: 6 },}
-                , React.createElement('div', { style: { fontSize: 9, color: DANGER, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase", marginBottom: 4 },}, "Fault Type" )
-                , React.createElement('div', { style: _s.chipRow,}
+              React.createElement('div', { style: { marginTop: fw ? 10 : 8, padding: fw ? 12 : 8, background: DANGER + "10", border: "2px solid " + DANGER + "60", borderRadius: 10 },}
+                , React.createElement('div', { style: { fontSize: fw ? 12 : 10, color: DANGER, fontWeight: 900, letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 },}, "Fault Type — select one" )
+                , React.createElement('div', { style: { display: "grid", gridTemplateColumns: fw ? "repeat(4, 1fr)" : "repeat(2, 1fr)", gap: fw ? 8 : 6 },}
                   , SERVE_FAULT_TYPES.map(ft => (
-                    React.createElement('button', { key: ft, style: { padding: "6px 10px", borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer", border: "2px solid " + (tag.serveFault === ft ? DANGER : "#3a1a1a"), background: tag.serveFault === ft ? DANGER : "transparent", color: tag.serveFault === ft ? WHITE : "#c06060" },
+                    React.createElement('button', { key: ft, style: { padding: fw ? "16px 8px" : "12px 8px", borderRadius: 8, fontSize: fw ? 16 : 13, fontWeight: 800, cursor: "pointer", border: "2.5px solid " + (tag.serveFault === ft ? DANGER : "#5a2a2a"), background: tag.serveFault === ft ? DANGER : DANGER + "18", color: tag.serveFault === ft ? WHITE : "#e08080", letterSpacing: 0.5 },
                       onClick: () => setT("serveFault", ft),}, ft)
                   ))
                 )
@@ -2820,17 +2820,18 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast
             )
           )
 
-          /* Double Fault type */
+          /* Double Fault type — LARGE buttons, appears immediately after DF selected */
           , isDoubleFault && (
-            React.createElement('div', { style: { marginTop: 8 },}
-              , React.createElement('div', { style: { fontSize: 9, color: DANGER, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase", marginBottom: 5 },}, "Double Fault Type"  )
-              , React.createElement('div', { style: _s.chipRow,}
+            React.createElement('div', { style: { marginTop: fw ? 12 : 10, padding: fw ? 12 : 10, background: DANGER + "10", border: "2px solid " + DANGER + "60", borderRadius: 10 },}
+              , React.createElement('div', { style: { fontSize: fw ? 12 : 10, color: DANGER, fontWeight: 900, letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 },}, "⚡ Double Fault Type — select one"  )
+              , React.createElement('div', { style: { display: "grid", gridTemplateColumns: fw ? "repeat(4, 1fr)" : "repeat(2, 1fr)", gap: fw ? 8 : 6 },}
                 , SERVE_FAULT_TYPES.map(ft => (
                   React.createElement('button', { key: ft, onClick: () => setT("dfFaultType", tag.dfFaultType === ft ? null : ft),
-                    style: { padding: "7px 12px", borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer",
-                      border: "2px solid " + (tag.dfFaultType === ft ? DANGER : "#3a1a1a"),
-                      background: tag.dfFaultType === ft ? DANGER : "transparent",
-                      color: tag.dfFaultType === ft ? WHITE : "#c06060" },}
+                    style: { padding: fw ? "16px 8px" : "12px 8px", borderRadius: 8, fontSize: fw ? 16 : 13, fontWeight: 800, cursor: "pointer",
+                      border: "2.5px solid " + (tag.dfFaultType === ft ? DANGER : "#5a2a2a"),
+                      background: tag.dfFaultType === ft ? DANGER : DANGER + "18",
+                      color: tag.dfFaultType === ft ? WHITE : "#e08080",
+                      letterSpacing: 0.5 },}
                     , ft
                   )
                 ))
@@ -4753,18 +4754,21 @@ function App() {
         superTieBreak: score.superTieBreak || false,
       },
     };
-    const newPoints = [...points, newPoint];
-    setPoints(newPoints);
-    const newScore = rebuildScore(newPoints, setup.format, superTieAt11);
-    setScore(newScore);
-    // Detect 1-1: if a new set just started and it's the 3rd set, prompt for super tie-break
-    if (canTriggerSuperTie(setup.format) && !superTieAt11 && !showSuperTieModal) {
-      const p1sets = newScore.sets.filter((st, i) => i < newScore.currentSet && st.p1 > st.p2).length;
-      const p2sets = newScore.sets.filter((st, i) => i < newScore.currentSet && st.p2 > st.p1).length;
-      if (p1sets === 1 && p2sets === 1 && newScore.currentSet === 2 && !newScore.matchWinner) {
-        setShowSuperTieModal(true);
+    // Use functional setter so we always operate on fresh state (critical after edits)
+    setPoints(prev => {
+      const updated = [...prev, newPoint];
+      const newScore = rebuildScore(updated, setup.format, superTieAt11);
+      setScore(newScore);
+      // Detect 1-1 for super tie-break prompt
+      if (canTriggerSuperTie(setup.format) && !superTieAt11 && !showSuperTieModal) {
+        const p1sets = newScore.sets.filter((st, i) => i < newScore.currentSet && st.p1 > st.p2).length;
+        const p2sets = newScore.sets.filter((st, i) => i < newScore.currentSet && st.p2 > st.p1).length;
+        if (p1sets === 1 && p2sets === 1 && newScore.currentSet === 2 && !newScore.matchWinner) {
+          setShowSuperTieModal(true);
+        }
       }
-    }
+      return updated;
+    });
     setTag({ ...EMPTY_TAG, serveType: "1st Serve" });
     // Haptic feedback (iPad) + visual flash
     if (navigator.vibrate) navigator.vibrate(50);
@@ -4802,28 +4806,34 @@ function App() {
     clearTimeout(undoTimerRef.current);
     setUndoPending(false);
     const removed = points[points.length - 1];
-    const np = points.slice(0, -1);
-    setPoints(np);
-    setScore(rebuildScore(np, setup.format, superTieAt11));
+    setPoints(prev => {
+      const np = prev.slice(0, -1);
+      setScore(rebuildScore(np, setup.format, superTieAt11));
+      return np;
+    });
     setUndoStack(prev => [...prev.slice(-4), removed]); // keep last 5
   };
 
   const handleRedo = () => {
     if (!undoStack.length) return;
     const restored = undoStack[undoStack.length - 1];
-    const np = [...points, restored];
-    setPoints(np);
-    setScore(rebuildScore(np, setup.format, superTieAt11));
+    setPoints(prev => {
+      const np = [...prev, restored];
+      setScore(rebuildScore(np, setup.format, superTieAt11));
+      return np;
+    });
     setUndoStack(prev => prev.slice(0, -1));
   };
 
   const handleEditLast = () => {
     if (!points.length) return;
     const lastPoint = points[points.length - 1];
-    // Remove last point and rebuild score
-    const np = points.slice(0, -1);
-    setPoints(np);
-    setScore(rebuildScore(np, setup.format, superTieAt11));
+    // Remove last point and rebuild score — use functional setter for consistency
+    setPoints(prev => {
+      const np = prev.slice(0, -1);
+      setScore(rebuildScore(np, setup.format, superTieAt11));
+      return np;
+    });
     // Load the point's tag data back into the form for editing
     setTag({
       serveType: lastPoint.serveType || null,
