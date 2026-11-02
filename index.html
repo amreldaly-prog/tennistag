@@ -37,7 +37,27 @@ const SERVE_TYPES = ["1st Serve", "2nd Serve"];
 // Serve direction removed — covered by landing zone
 const SERVE_FAULT_TYPES = ["Net", "Long", "Wide", "Foot Fault"];
 const SERVE_SPIN = ["Flat", "Slice", "Kick", "Underarm"]; // serve shot type
-const RETURN_HANDS = ["Forehand", "Backhand"];
+const RETURN_HANDS = ["Forehand", "Backhand", "Slice Forehand", "Slice Backhand"];
+// Short labels for chips / logs
+const SHOT_SHORT = {
+  "Forehand": "FH", "Backhand": "BH",
+  "Slice Forehand": "Slice FH", "Slice Backhand": "Slice BH",
+  "Drop Shot Forehand": "Drop FH", "Drop Shot Backhand": "Drop BH",
+};
+function shotLabel(v) { return SHOT_SHORT[v] && v.indexOf(" ") > -1 ? SHOT_SHORT[v] : v; }
+function shotAbbr(v) {
+  if (!v) return "—";
+  const m = { "Forehand":"FH","Backhand":"BH","Slice Forehand":"SFH","Slice Backhand":"SBH",
+    "Drop Shot Forehand":"DFH","Drop Shot Backhand":"DBH","Drop Shot":"Drop","Volley":"Vol",
+    "Approach":"App","Overhead":"OH","Lob":"Lob","Slice":"Sl","N/A":"—" };
+  return m[v] || v.slice(0,3);
+}
+// Serve +1 / Return +1 shot options (value stored → chip label via shotLabel)
+const SP1_SHOTS = ["Forehand","Backhand","Slice Forehand","Slice Backhand","Volley","Approach","Overhead","Drop Shot Forehand","Drop Shot Backhand","N/A"];
+const RP1_SHOTS = ["Forehand","Backhand","Slice Forehand","Slice Backhand","Volley","Approach","Lob","Drop Shot Forehand","Drop Shot Backhand","N/A"];
+const PLUS_ONE_RESULTS = ["Winner", "Error"];
+// Shots where a direction pick makes no sense
+function plusOneNoDir(v) { return !v || v === "N/A" || v === "Overhead" || v === "Lob" || v.indexOf("Drop Shot") === 0; }
 const SERVE_PLUS_ONE_DIRS = ["Cross-Court", "Down-the-Line", "Body"]; // direction for serve+1 / return+1
 const OUTCOMES = ["Winner", "Unforced Error", "Forced Error", "Ace", "Double Fault", "Return Winner", "Return Error", "Let"];
 // Shot types grouped by category for the picker UI
@@ -45,27 +65,27 @@ const SHOT_GROUPS = [
   {
     group: "Groundstrokes",
     color: "#1a5276",
-    shots: ["Forehand", "Backhand"],
+    shots: ["Forehand", "Backhand", "Slice Forehand", "Slice Backhand"],
   },
   {
-    group: "Slices",
-    color: "#2c6e91",
-    shots: ["Slice Forehand", "Slice Backhand"],
+    group: "Serve & Return",
+    color: "#2d6a4f",
+    shots: ["Serve", "Return Forehand", "Return Backhand"],
   },
   {
-    group: "Volleys",
-    color: "#0e4d6e",
-    shots: ["Volley Forehand", "Volley Backhand"],
+    group: "Approach",
+    color: "#5b2c6f",
+    shots: ["Approach Forehand", "Approach Backhand"],
   },
   {
     group: "Net",
-    color: "#5b2c6f",
-    shots: ["Overhead", "Drop Shot", "Half Volley"],
+    color: "#0e4d6e",
+    shots: ["Volley Forehand", "Volley Backhand", "Overhead", "Half Volley"],
   },
   {
-    group: "Special",
+    group: "Specials",
     color: "#6e2f10",
-    shots: ["Approach Forehand", "Approach Backhand", "Lob", "Tweener"],
+    shots: ["Drop Shot Forehand", "Drop Shot Backhand", "Lob", "Tweener"],
   },
 ];
 // Flat list for CSV / log references
@@ -903,23 +923,20 @@ function pct(n, d) { return d ? Math.round((n / d) * 100) : 0; }
 // Derive serve side from current point score
 // Regular games: Deuce = even total points, Ad = odd
 // Tiebreaks/Super TB: numeric scores, same even/odd rule
-function deriveServeSide(scorePoints) {
+function deriveServeSide(score) {
+  // Accepts the full score object (preferred) or just its points
+  const scorePoints = score && score.points ? score.points : score;
   const p1v = scorePoints.p1;
   const p2v = scorePoints.p2;
-  // Regular tennis scores - if values match these, use index-based math (NOT tiebreak)
-  const TENNIS_SCORES = ["0", "15", "30", "40", "AD"];
-  const isP1TennisScore = TENNIS_SCORES.includes(p1v);
-  const isP2TennisScore = TENNIS_SCORES.includes(p2v);
-  // Tiebreak mode: BOTH values must be numeric AND NEITHER is a regular tennis score string
-  if (!isP1TennisScore && !isP2TennisScore) {
-    const p1n = Number(p1v);
-    const p2n = Number(p2v);
-    if (!isNaN(p1n) && !isNaN(p2n)) {
-      const total = p1n + p2n;
-      return total % 2 === 0 ? "Deuce" : "Ad";
-    }
+  const seqVals = ["0","15","30","40","AD"];
+  const inTieBreak = !!(score && (score.tieBreak || score.superTieBreak))
+    || !(seqVals.includes(p1v) && seqVals.includes(p2v));
+  if (inTieBreak) {
+    // Tiebreak: numeric points, total played decides the side
+    const total = (Number(p1v) || 0) + (Number(p2v) || 0);
+    return total % 2 === 0 ? "Deuce" : "Ad";
   }
-  // Regular game scoring — use sequence indices
+  // Regular game scoring
   const seq = ["0","15","30","40","AD"];
   const p1i = seq.indexOf(p1v);
   const p2i = seq.indexOf(p2v);
@@ -1006,46 +1023,6 @@ function detectPressurePoint(score, format) {
   return false;
 }
 
-// Returns specific pressure type string for a given score state (used for CSV export)
-// Priority: MatchPoint > SetPoint > BreakPoint > GamePoint > Deuce > ""
-function detectPressurePointType(score, format) {
-  if (!score || score.matchWinner) return "";
-  const { sets, games, points, server, superTieBreak, currentSet } = score;
-  const returner = server === "p1" ? "p2" : "p1";
-  const sp = points[server], rp = points[returner];
-  if (superTieBreak) {
-    const sn = Number(sp) || 0, rn = Number(rp) || 0;
-    if ((sn >= 9 && sn > rn) || (rn >= 9 && rn > sn)) return "MatchPoint";
-    return "";
-  }
-  const isBreakPoint = (rp === "40" && sp !== "40" && sp !== "AD") || (rp === "AD");
-  const isGamePoint = (sp === "40" && rp !== "40" && rp !== "AD") || (sp === "AD");
-  const isDeuce = (sp === "40" && rp === "40");
-  const target = getSetTarget(format);
-  const needed = setsNeeded(format);
-  const setsWon = (pid) => sets.filter((st, i) => i < currentSet && st[pid] > st[pid === "p1" ? "p2" : "p1"]).length;
-  // Check set point for both sides
-  const checkSetPt = (pid, canWin) => {
-    if (!canWin) return false;
-    const gP = games[pid], gO = games[pid === "p1" ? "p2" : "p1"];
-    if (gP >= target - 1 && gP >= gO && (gP - gO >= 1 || (gP === target - 1 && gO === target - 1))) {
-      if (gP === target - 1 && gO === target - 1) return false;
-      return true;
-    }
-    if (gP >= target && gP - gO >= 1) return true;
-    return false;
-  };
-  const serverSetPt = checkSetPt(server, isGamePoint);
-  const returnerSetPt = checkSetPt(returner, isBreakPoint);
-  // Match point = set point for someone with (needed-1) sets already won
-  if ((serverSetPt && setsWon(server) >= needed - 1) || (returnerSetPt && setsWon(returner) >= needed - 1)) return "MatchPoint";
-  if (serverSetPt || returnerSetPt) return "SetPoint";
-  if (isBreakPoint) return "BreakPoint";
-  if (isGamePoint) return "GamePoint";
-  if (isDeuce) return "Deuce";
-  return "";
-}
-
 function getSetTarget(format) {
   return (format === "Short Set (1st to 4)" || format === "Best of 3 Short Sets") ? 4 : 6;
 }
@@ -1055,36 +1032,20 @@ function setsNeeded(format) {
   return 2;
 }
 
-function rebuildScore(pts, fmt, superTieAt11, initialServer) {
+function rebuildScore(pts, fmt, superTieAt11) {
   let sc = {
     sets: [{ p1: 0, p2: 0 }],
     games: { p1: 0, p2: 0 },
     points: { p1: "0", p2: "0" },
     currentSet: 0,
-    server: initialServer || "p1",
+    server: "p1",
     matchWinner: null,
     superTieBreak: false,
     tieBreak: false,       // regular tiebreak at 6-6
     tieBreakPts: 0,        // total points played in tiebreak (for server rotation)
-    tieBreakServer: initialServer || "p1",  // who serves first in tiebreak
+    tieBreakServer: "p1",  // who serves first in tiebreak
   };
   for (const p of pts) {
-    // ── GHOST CORRECTION POINT ──
-    // Synthetic point inserted by handleOverwriteApply. Snaps the running score to a corrected state.
-    // Not a real point — does not contribute to stats — only adjusts the running score state.
-    if (p._isCorrection && p._snapshot) {
-      const snap = p._snapshot;
-      sc.sets = snap.sets.map(s => ({ p1: s.p1 || 0, p2: s.p2 || 0 }));
-      sc.games = { p1: snap.games.p1 || 0, p2: snap.games.p2 || 0 };
-      sc.points = { p1: snap.points.p1, p2: snap.points.p2 };
-      sc.currentSet = snap.currentSet != null ? snap.currentSet : (sc.sets.length - 1);
-      sc.server = snap.server || sc.server;
-      sc.tieBreak = !!snap.tieBreak;
-      sc.superTieBreak = !!snap.superTieBreak;
-      sc.tieBreakPts = snap.tieBreakPts || 0;
-      sc.tieBreakServer = snap.tieBreakServer || sc.tieBreakServer;
-      continue; // do not process as a regular point
-    }
     const winner = p.pointWinner;
     if (!winner || sc.matchWinner) continue;
     const loser = winner === "p1" ? "p2" : "p1";
@@ -1204,9 +1165,7 @@ function rebuildScore(pts, fmt, superTieAt11, initialServer) {
 }
 
 // ─── STATS CALCULATIONS ───────────────────────────────────────────────────────
-function calcStats(rawPoints) {
-  // Filter out ghost correction points — they're for score state only, not real points
-  const points = (rawPoints || []).filter(p => !p._isCorrection);
+function calcStats(points) {
   if (!points.length) return null;
   const total = points.length;
   const p1pts = points.filter(p => p.pointWinner === "p1").length;
@@ -1242,6 +1201,11 @@ function calcStats(rawPoints) {
 
   const rallyDist = {};
   RALLY_RANGES.forEach(r => { rallyDist[r] = points.filter(p => p.rallyLength === r).length; });
+  const rallyWon = {};
+  RALLY_RANGES.forEach(r => {
+    const rp = points.filter(p => p.rallyLength === r);
+    rallyWon[r] = { p1: rp.filter(p => p.pointWinner === "p1").length, p2: rp.filter(p => p.pointWinner === "p2").length };
+  });
 
   const netP1 = points.filter(p => p.netApproach && p.server === "p1");
   const netP2 = points.filter(p => p.netApproach && p.server === "p2");
@@ -1269,10 +1233,40 @@ function calcStats(rawPoints) {
     };
   };
 
+  // Serve +1 (hit by server) and Return +1 (hit by returner) outcomes
+  const plusOne = (pid, kind) => {
+    const isSp = kind === "sp";
+    const pts = points.filter(p => isSp ? p.server === pid : p.server !== pid);
+    const field = isSp ? "servePlusOne" : "returnPlusOne";
+    const res = isSp ? "sp1Result" : "rp1Result";
+    const played = pts.filter(p => p[field] && p[field] !== "N/A");
+    return {
+      total: played.length,
+      winners: pts.filter(p => p[res] === "Winner").length,
+      errors: pts.filter(p => p[res] === "Error").length,
+    };
+  };
+  // Return winners / errors by shot (pid = returner)
+  const retByShot = (pid) => {
+    const out = {};
+    RETURN_HANDS.forEach(h => {
+      const rp = points.filter(p => p.server !== pid && p.returnHand === h);
+      out[h] = {
+        total: rp.length,
+        winners: rp.filter(p => p.outcome === "Return Winner").length,
+        errors: rp.filter(p => p.outcome === "Return Error").length,
+      };
+    });
+    return out;
+  };
+
   return {
     total, p1pts, p2pts,
+    p1sp1: plusOne("p1", "sp"), p2sp1: plusOne("p2", "sp"),
+    p1rp1: plusOne("p1", "rp"), p2rp1: plusOne("p2", "rp"),
+    p1retShot: retByShot("p1"), p2retShot: retByShot("p2"),
     p1serve: serveStats("p1"), p2serve: serveStats("p2"),
-    rallyDist,
+    rallyDist, rallyWon,
     netP1, netP2,
     p1winners: points.filter(p => p.pointWinner === "p1" && (p.outcome === "Winner" || p.outcome === "Ace")).length,
     p2winners: points.filter(p => p.pointWinner === "p2" && (p.outcome === "Winner" || p.outcome === "Ace")).length,
@@ -1290,31 +1284,18 @@ function calcStats(rawPoints) {
 }
 
 // ─── CSV EXPORT ───────────────────────────────────────────────────────────────
-function exportCSV(rawPoints, setup) {
-  // Filter out ghost correction points — they're score-state-only, not real points
-  const points = (rawPoints || []).filter(p => !p._isCorrection);
+function exportCSV(points, setup) {
   // CSV — verified field order (one row per point, all fields)
   const hdrs = [
-    "MatchID", "PointID",
-    "Pt#", "Timestamp", "ElapsedMin", "SetNumber", "GameScore", "PointScore",
+    "Pt#", "Timestamp", "ElapsedMin", "Set", "GameScore", "PointScore",
     "Server", "ServerUTR", "ServerHand",
-    "ServeSide", "ServeType", "ServeSpin", "ServeZone",
-    "FirstServeFaultType", "FirstServeFaultZone",
-    "ServeFault", "DfFaultType",
+    "ServeSide", "ServeType", "ServeSpin", "ServeZone", "ServeFault", "DfFaultType",
     "ReturnHand", "ReturnPosition", "ReturnLandZone", "ReturnLandAbsolute",
-    "Serve+1Shot", "Serve+1Dir", "Return+1Shot", "Return+1Dir",
+    "Serve+1Shot", "Serve+1Dir", "Serve+1Result", "Return+1Shot", "Return+1Dir", "Return+1Result",
     "RallyLength", "Outcome", "ErrorShot", "ErrorDirection", "WinningShot",
-    "NetApproach", "PressurePoint", "PressurePointType",
-    "PointEndedBy",
+    "NetApproach", "PressurePoint",
     "PointWinner", "WinnerUTR", "WinnerHand"
   ];
-  // Trim whitespace from player names for data consistency
-  const p1Name = (setup.player1 || "").trim();
-  const p2Name = (setup.player2 || "").trim();
-  // Build a stable MatchID: date + player initials (e.g. "2026-04-11_YE_TS")
-  const today = (setup.date || new Date().toISOString().slice(0,10)).slice(0,10);
-  const initials = (name) => (name || "").split(/\s+/).filter(Boolean).map(w => w[0] || "").join("").toUpperCase().slice(0,2) || "XX";
-  const matchID = today + "_" + initials(p1Name) + "_" + initials(p2Name);
   const matchStartTs = points.length > 0 && points[0].timestamp ? points[0].timestamp : 0;
   const rows = points.map((p, i) => {
     const isP1Server = p.server === "p1";
@@ -1326,23 +1307,19 @@ function exportCSV(rawPoints, setup) {
     const ts = p.timestamp ? new Date(p.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
     const elapsedMin = p.timestamp && matchStartTs ? Math.round((p.timestamp - matchStartTs) / 60000) : "";
     return [
-      matchID,
-      matchID + "_P" + (i + 1),
       i + 1,
       ts,
       elapsedMin,
       setNum,
       gameStr,
       ptsStr,
-      isP1Server ? p1Name : p2Name,
+      isP1Server ? setup.player1 : setup.player2,
       isP1Server ? (setup.p1utr || "") : (setup.p2utr || ""),
       isP1Server ? (setup.p1hand || "") : (setup.p2hand || ""),
       p.serveSide || "",
       p.serveType || "",
       p.serveSpin || "",
       p.serveZone || "",
-      (p.firstServeFaultType && p.firstServeFaultType !== "?") ? p.firstServeFaultType : "",
-      p.firstServeFaultZone || "",
       (p.serveFault && p.serveFault !== "?") ? p.serveFault : "",
       p.dfFaultType || "",
       p.returnHand || "",
@@ -1351,8 +1328,10 @@ function exportCSV(rawPoints, setup) {
       p.returnLandAbsolute || "",
       p.servePlusOne || "",
       p.sp1Dir || "",
+      p.sp1Result || "",
       p.returnPlusOne || "",
       p.rp1Dir || "",
+      p.rp1Result || "",
       p.rallyLength || "",
       p.outcome || "",
       p.errorShot || "",
@@ -1360,18 +1339,7 @@ function exportCSV(rawPoints, setup) {
       p.shotType || "",
       p.netApproach ? "Yes" : "No",
       p.pressurePoint ? "Yes" : "No",
-      p.pressurePointType || "",
-      // PointEndedBy = the player who hit the final shot
-      // Winner/Ace → pointWinner; Error/DF → the losing player (they hit the final shot into net/out)
-      (function() {
-        if (!p.outcome) return "";
-        const w = isP1Winner ? p1Name : p2Name;
-        const l = isP1Winner ? p2Name : p1Name;
-        if (p.outcome === "Winner" || p.outcome === "Ace" || p.outcome === "Return Winner") return w;
-        if (p.outcome.includes("Error") || p.outcome === "Double Fault") return l;
-        return "";
-      })(),
-      isP1Winner ? p1Name : p2Name,
+      isP1Winner ? setup.player1 : setup.player2,
       isP1Winner ? (setup.p1utr || "") : (setup.p2utr || ""),
       isP1Winner ? (setup.p1hand || "") : (setup.p2hand || ""),
     ].map(v => { const s = String(v); return s.includes(",") || s.includes('"') || s.includes("\n") ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(",");
@@ -1728,7 +1696,7 @@ function ServeZoneHeatmap({ title, zones, side }) {
 }
 
 function ReturnZoneHeatmap({ title, zones }) {
-  const allZones = [["Cross-Deep","Center-Deep","Wide-Deep"],["Cross-Mid","Center-Mid","Wide-Mid"]];
+  const allZones = [["Cross-Deep","Centre-Deep","Down-line-Deep"],["Cross-Mid","Centre-Mid","Down-line-Mid"]];
   const max = Math.max(1, ...Object.values(zones));
   return (
     React.createElement('div', { style: { ...s.statCard },}
@@ -1781,6 +1749,92 @@ function SuperTieModal({ setup, onDecide }) {
   );
 }
 
+// ─── MATCH TIMELINE (games & scores) ──────────────────────────────────────────
+// Groups points into games using each point's score snapshot.
+function buildTimeline(points, score) {
+  const games = [];
+  points.forEach(p => {
+    const ss = p.scoreSnapshot; if (!ss || !ss.games) return;
+    const key = ss.setNum + "|" + ss.games.p1 + "-" + ss.games.p2 + "|" + (ss.superTieBreak ? "S" : ss.tieBreak ? "T" : "G");
+    let g = games[games.length - 1];
+    if (!g || g.key !== key) {
+      g = { key, set: ss.setNum, before: { p1: ss.games.p1, p2: ss.games.p2 }, tb: !!ss.tieBreak, stb: !!ss.superTieBreak,
+            server: p.server, pts: [], pp: 0, p2p: 0 };
+      games.push(g);
+    }
+    g.pts.push(p.pointWinner);
+    if (p.pointWinner === "p1") g.pp++; else g.p2p++;
+  });
+  games.forEach((g, i) => {
+    const last = g.pts[g.pts.length - 1];
+    const next = games[i + 1];
+    g.done = !!next || !!(score && score.matchWinner);
+    if (!g.done && score && score.points) g.live = (score.tieBreak || score.superTieBreak) ? score.points.p1 + "-" + score.points.p2 : (score.points.p1 === "AD" ? "AD-40" : score.points.p2 === "AD" ? "40-AD" : score.points.p1 + "-" + score.points.p2);
+    g.winner = g.done ? last : null;
+    g.isBreak = g.done && !g.stb && g.winner !== g.server;
+    g.after = { p1: g.before.p1 + (g.winner === "p1" ? 1 : 0), p2: g.before.p2 + (g.winner === "p2" ? 1 : 0) };
+    if (g.tb && g.done) { g.after = { p1: g.before.p1 + (g.winner === "p1" ? 1 : 0), p2: g.before.p2 + (g.winner === "p2" ? 1 : 0) }; }
+  });
+  // group by set
+  const sets = [];
+  games.forEach(g => {
+    let s = sets.find(x => x.set === g.set);
+    if (!s) { s = { set: g.set, games: [] }; sets.push(s); }
+    s.games.push(g);
+  });
+  sets.forEach(s => {
+    const lg = s.games[s.games.length - 1];
+    s.final = lg.done ? lg.after : lg.before;
+    s.inProgress = !lg.done;
+  });
+  return sets;
+}
+
+function escXml(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+
+// Returns an SVG string for one set's timeline. `dark` toggles palette.
+function timelineSVG(setData, setup, dark) {
+  const C1 = P1C, C2 = P2C;
+  const txt = dark ? "#e8f4f8" : "#1a1a2e", mut = dark ? "#7fa8c0" : "#777", line = dark ? "#1e3a5f" : "#ddd";
+  const cellBg = dark ? "#112233" : "#f7f8fa", breakBg = dark ? "#2a1212" : "#fff0f0", breakLine = "#e63946";
+  const n = setData.games.length;
+  const CW = 54, GAP = 6, H = 118, L = 8, TOP = 8;
+  const W = L * 2 + n * CW + (n - 1) * GAP;
+  let s = "";
+  setData.games.forEach((g, i) => {
+    const x = L + i * (CW + GAP);
+    const sc = g.server === "p1" ? C1 : C2;
+    const isBreak = g.isBreak;
+    s += "<rect x='" + x + "' y='" + TOP + "' width='" + CW + "' height='" + (H - TOP - 4) + "' rx='6' fill='" + (isBreak ? breakBg : cellBg) + "' stroke='" + (isBreak ? breakLine : line) + "' stroke-width='" + (isBreak ? 1.6 : 1) + "'/>";
+    // games score after this game
+    const label = g.stb ? "STB" : (g.done ? g.after.p1 + "-" + g.after.p2 : (g.live || "…"));
+    s += "<text x='" + (x + CW/2) + "' y='" + (TOP + 17) + "' text-anchor='middle' font-size='13' font-weight='800' fill='" + txt + "'>" + label + "</text>";
+    // server marker
+    s += "<circle cx='" + (x + 11) + "' cy='" + (TOP + 32) + "' r='4' fill='" + sc + "'/>";
+    s += "<text x='" + (x + 18) + "' y='" + (TOP + 35.5) + "' font-size='8' fill='" + mut + "'>" + (g.tb ? "TB" : g.stb ? "STB" : "serve") + "</text>";
+    // points dots (wrap 6 per row)
+    const per = 6, dr = 3.2, dx = 7.6, y0 = TOP + 49;
+    g.pts.forEach((w, k) => {
+      const cx = x + 8 + (k % per) * dx + dr, cy = y0 + Math.floor(k / per) * 8.5;
+      s += "<circle cx='" + cx + "' cy='" + cy + "' r='" + dr + "' fill='" + (w === "p1" ? C1 : C2) + "'/>";
+    });
+    // points tally
+    s += "<text x='" + (x + CW/2) + "' y='" + (H - 20) + "' text-anchor='middle' font-size='9' fill='" + mut + "'>" + g.pp + "–" + g.p2p + " pts</text>";
+    // outcome
+    const oc = !g.done ? "in play" : g.stb ? "" : (isBreak ? "BREAK" : "hold");
+    s += "<text x='" + (x + CW/2) + "' y='" + (H - 9) + "' text-anchor='middle' font-size='8' font-weight='" + (isBreak ? 800 : 600) + "' fill='" + (isBreak ? breakLine : mut) + "'>" + oc + "</text>";
+  });
+  return "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 " + W + " " + H + "' width='100%' style='display:block;max-width:" + W + "px' font-family=\"'DM Sans','Segoe UI',sans-serif\">" + s + "</svg>";
+}
+
+function timelineLegendHTML(setup, dark) {
+  const mut = dark ? "#7fa8c0" : "#666";
+  return "<div style='display:flex;gap:14px;flex-wrap:wrap;font-size:10px;color:" + mut + ";margin:4px 0 8px'>" +
+    "<span><span style='display:inline-block;width:9px;height:9px;border-radius:50%;background:" + P1C + ";margin-right:4px'></span>" + escXml(setup.player1) + "</span>" +
+    "<span><span style='display:inline-block;width:9px;height:9px;border-radius:50%;background:" + P2C + ";margin-right:4px'></span>" + escXml(setup.player2) + "</span>" +
+    "<span>Top: games score after the game &middot; dot beside \"serve\": server &middot; small dots: each point, coloured by winner &middot; red box: break of serve</span></div>";
+}
+
 // ─── PDF EXPORT ───────────────────────────────────────────────────────────────
 function exportPDF(points, setup, score, matchTime, conditions) {
   const stats = calcStats(points);
@@ -1788,22 +1842,26 @@ function exportPDF(points, setup, score, matchTime, conditions) {
   const duration = matchTime.start && matchTime.end ? fmtDuration(matchTime.end - matchTime.start) : "In progress";
   const pct = (n, d) => d ? Math.round((n / d) * 100) + "%" : "—";
 
-  // Zone heatmap table — 3 zones (Wide/Body/T), no depth split
+  // Zone heatmap table — no nested template literals
   function zoneTable(zones, side) {
     const ltr = side === "Ad" ? ["T","Body","Wide"] : ["Wide","Body","T"];
-    const max = Math.max(1, ...Object.values(zones).map(v => Number(v) || 0), 1);
+    const merged = {};
+    ltr.forEach(c => { merged[c] = (zones[c] || 0) + (zones[c + "-Deep"] || 0) + (zones[c + "-Short"] || 0) + (zones[c + "-Mid"] || 0); });
+    const total = ltr.reduce((t, c) => t + merged[c], 0);
+    const max = Math.max(1, ...Object.values(merged));
     let headerCells = ltr.map(c => "<th>" + c + "</th>").join("");
     let cells = ltr.map(c => {
-      const v = zones[c] || 0;
+      const v = merged[c];
       const alpha = (0.08 + (v/max) * 0.8).toFixed(2);
-      return "<td style='background:rgba(244,211,94," + alpha + ");font-weight:" + (v/max > 0.4 ? 700 : 400) + ";padding:10px;text-align:center;font-size:16px'>" + v + "</td>";
+      const share = total ? Math.round(100 * v / total) : 0;
+      return "<td style='background:rgba(244,211,94," + alpha + ");font-weight:" + (v/max > 0.4 ? 700 : 400) + ";font-size:14px'>" + v + "<br><small>" + share + "%</small></td>";
     }).join("");
-    return "<table class='zone-table'><thead><tr><th colspan='3'>" + side + " Side</th></tr><tr>" + headerCells + "</tr></thead><tbody><tr>" + cells + "</tr></tbody></table>";
+    return "<table class='zone-table'><thead><tr><th colspan='3'>" + side + " Side &middot; " + total + " serves</th></tr><tr>" + headerCells + "</tr></thead><tbody><tr>" + cells + "</tr></tbody></table>";
   }
 
   function retZoneTable(zones) {
     const max = Math.max(1, ...Object.values(zones));
-    const cols = ["Cross","Center","Wide"];
+    const cols = ["Cross","Centre","Down-line"];
     const depths = ["Deep","Mid"];
     let rows = depths.map(depth => {
       let cells = cols.map(col => {
@@ -1817,7 +1875,7 @@ function exportPDF(points, setup, score, matchTime, conditions) {
     const netRow = (zones["Net"] || 0) > 0
       ? "<tr><td colspan='3' style='background:#ffe0e0;color:#c0392b;font-weight:700;text-align:center;padding:4px'>Net: " + zones["Net"] + "</td></tr>"
       : "";
-    return "<table class='zone-table'><thead><tr><th>Cross</th><th>Center</th><th>Wide</th></tr></thead><tbody>" + rows + netRow + "</tbody></table>";
+    return "<table class='zone-table'><thead><tr><th>Cross</th><th>Centre</th><th>Down-line</th></tr></thead><tbody>" + rows + netRow + "</tbody></table>";
   }
 
   function statRow(label, v1, v2) {
@@ -1834,14 +1892,22 @@ function exportPDF(points, setup, score, matchTime, conditions) {
       "</div>";
   }
 
-  function rallyRow(label, count, total) {
+  function rallyRow(label, count, total, won) {
     const p = total ? Math.round((count / total) * 100) : 0;
     return "<div class='rrow'>" +
       "<span style='width:36px;font-weight:700'>" + label + "</span>" +
       "<div class='rbg'><div class='rfill' style='width:" + p + "%'></div></div>" +
       "<span style='width:26px;text-align:right;font-weight:700;color:#2d6a4f'>" + count + "</span>" +
       "<span style='width:32px;color:#999'>" + p + "%</span>" +
-      "</div>";
+      "</div>" +
+      (count > 0 && won ? (function() {
+        const a = Math.round((won.p1 / count) * 100), b = Math.round((won.p2 / count) * 100);
+        return "<div class='rrow' style='padding-left:43px;margin-top:-2px;margin-bottom:8px'>" +
+          "<span style='width:70px;font-weight:700;color:#28a050'>" + player1.split(' ')[0] + " " + a + "%</span>" +
+          "<div class='rbg' style='display:flex;overflow:hidden'><div style='height:7px;width:" + a + "%;background:#28a050'></div><div style='height:7px;width:" + b + "%;background:#8840c0'></div></div>" +
+          "<span style='width:70px;text-align:right;font-weight:700;color:#8840c0'>" + b + "% " + player2.split(' ')[0] + "</span>" +
+          "</div>";
+      })() : "");
   }
 
   function pointLogRow(p, i, player1, player2) {
@@ -1861,8 +1927,8 @@ function exportPDF(points, setup, score, matchTime, conditions) {
       "<td style='color:#c0392b'>" + fault + "</td>" +
       "<td>" + (p.returnHand || "—") + "</td>" +
       "<td>" + (p.returnLandZone || "—") + "</td>" +
-      "<td>" + (p.servePlusOne || "—") + "</td>" +
-      "<td>" + (p.returnPlusOne || "—") + "</td>" +
+      "<td>" + (p.servePlusOne || "—") + (p.sp1Result ? (p.sp1Result === "Winner" ? " <b style='color:#27ae60'>W</b>" : " <b style='color:#c0392b'>E</b>") : "") + "</td>" +
+      "<td>" + (p.returnPlusOne || "—") + (p.rp1Result ? (p.rp1Result === "Winner" ? " <b style='color:#27ae60'>W</b>" : " <b style='color:#c0392b'>E</b>") : "") + "</td>" +
       "<td>" + (p.rallyLength || "—") + "</td>" +
       "<td class='" + cls + "'>" + ocLabel + "</td>" +
       "<td><b>" + win + "</b></td>" +
@@ -1895,9 +1961,6 @@ function exportPDF(points, setup, score, matchTime, conditions) {
     ".zone-table th{background:#2d6a4f;color:#fff;padding:4px;text-align:center;font-size:10px}",
     ".zone-table td{padding:7px 3px;text-align:center;border:1px solid #ddd}",
     ".zone-table small{display:block;font-size:8px;color:#999}",
-    ".mini{width:100%;border-collapse:collapse;font-size:10px;margin-bottom:6px}",
-    ".mini th{background:#2d6a4f;color:#fff;padding:4px;text-align:center;font-size:10px}",
-    ".mini td{padding:4px 6px;text-align:center;border:1px solid #ddd}",
     ".bp-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}",
     ".bp-box{border:1px solid #ddd;border-radius:7px;padding:9px 11px}",
     ".bp-row{display:flex;justify-content:space-between;font-size:10px;padding:2px 0;border-bottom:1px solid #f5f5f5}",
@@ -1946,132 +2009,34 @@ function exportPDF(points, setup, score, matchTime, conditions) {
   if (!stats) {
     html += "<p>No points logged.</p>";
   } else {
-    // ── Per-set Match Statistics breakdown ──
-    // Collect unique set numbers from points
-    const setsInMatch = [];
-    points.forEach(p => {
-      const sn = p.scoreSnapshot && p.scoreSnapshot.setNum;
-      if (sn && !setsInMatch.includes(sn)) setsInMatch.push(sn);
-    });
-    setsInMatch.sort((a, b) => a - b);
-
-    // Helper: render a Match Statistics table for a given filtered point set
-    function statsTable(filteredPts, label) {
-      const s = calcStats(filteredPts);
-      if (!s) return "";
-      let h = "<h2>" + label + "</h2>";
-      h += "<div style='display:flex;justify-content:space-between;margin-bottom:5px'><span style='font-weight:800;color:#28a050;font-size:12px'>" + player1 + "</span><span style='font-size:10px;color:#888'>" + s.total + " pts</span><span style='font-weight:800;color:#8840c0;font-size:12px'>" + player2 + "</span></div>";
-      h += "<table class='st'><tbody>";
-      h += statRow("Points Won", s.p1pts, s.p2pts);
-      h += statRow("Winners", s.p1winners, s.p2winners);
-      h += statRow("Unforced Errors", s.p1ue, s.p2ue);
-      h += statRow("Aces", s.p1serve.aces, s.p2serve.aces);
-      h += statRow("Double Faults", s.p1serve.dfs, s.p2serve.dfs);
-      h += statRow("1st Serve In %", pct(s.p1serve.firstIn, s.p1serve.total), pct(s.p2serve.firstIn, s.p2serve.total));
-      h += statRow("1st Serve Won %", pct(s.p1serve.firstWon, s.p1serve.firstIn), pct(s.p2serve.firstWon, s.p2serve.firstIn));
-      h += statRow("2nd Serve Won %", pct(s.p1serve.secondWon, s.p1serve.secondIn), pct(s.p2serve.secondWon, s.p2serve.secondIn));
-      h += statRow("Net Approaches", s.netP1.length, s.netP2.length);
-      h += statRow("Net Points Won", s.netP1.filter(p=>p.pointWinner==="p1").length, s.netP2.filter(p=>p.pointWinner==="p2").length);
-      if (s.p1sv.total > 0 || s.p2sv.total > 0) {
-        h += statRow("Serve & Volley", s.p1sv.total, s.p2sv.total);
-        h += statRow("S&V Won %", pct(s.p1sv.won, s.p1sv.total), pct(s.p2sv.won, s.p2sv.total));
-      }
-      h += "</tbody></table>";
-      return h;
+    // Match stats
+    html += "<h2>Match Statistics</h2>";
+    html += "<div style='display:flex;justify-content:space-between;margin-bottom:5px'><span style='font-weight:800;color:#28a050;font-size:12px'>" + player1 + "</span><span style='font-size:10px;color:#888'>" + stats.total + " pts</span><span style='font-weight:800;color:#8840c0;font-size:12px'>" + player2 + "</span></div>";
+    html += "<table class='st'><tbody>";
+    html += statRow("Points Won", stats.p1pts, stats.p2pts);
+    html += statRow("Winners", stats.p1winners, stats.p2winners);
+    html += statRow("Unforced Errors", stats.p1ue, stats.p2ue);
+    html += statRow("Aces", stats.p1serve.aces, stats.p2serve.aces);
+    html += statRow("Double Faults", stats.p1serve.dfs, stats.p2serve.dfs);
+    html += statRow("1st Serve In %", pct(stats.p1serve.firstIn, stats.p1serve.total), pct(stats.p2serve.firstIn, stats.p2serve.total));
+    html += statRow("1st Serve Won %", pct(stats.p1serve.firstWon, stats.p1serve.firstIn), pct(stats.p2serve.firstWon, stats.p2serve.firstIn));
+    html += statRow("2nd Serve Won %", pct(stats.p1serve.secondWon, stats.p1serve.secondIn), pct(stats.p2serve.secondWon, stats.p2serve.secondIn));
+    html += statRow("Serve +1 Winners", stats.p1sp1.winners, stats.p2sp1.winners);
+    html += statRow("Serve +1 Errors", stats.p1sp1.errors, stats.p2sp1.errors);
+    html += statRow("Return +1 Winners", stats.p1rp1.winners, stats.p2rp1.winners);
+    html += statRow("Return +1 Errors", stats.p1rp1.errors, stats.p2rp1.errors);
+    html += statRow("Net Approaches", stats.netP1.length, stats.netP2.length);
+    html += statRow("Net Points Won", stats.netP1.filter(p=>p.pointWinner==="p1").length, stats.netP2.filter(p=>p.pointWinner==="p2").length);
+    if (stats.p1sv.total > 0 || stats.p2sv.total > 0) {
+      html += statRow("Serve & Volley", stats.p1sv.total, stats.p2sv.total);
+      html += statRow("S&V Won %", pct(stats.p1sv.won, stats.p1sv.total), pct(stats.p2sv.won, stats.p2sv.total));
     }
-
-    // Render per-set tables if there's more than one set of data
-    if (setsInMatch.length > 1) {
-      setsInMatch.forEach(sn => {
-        const setPts = points.filter(p => p.scoreSnapshot && p.scoreSnapshot.setNum === sn);
-        html += statsTable(setPts, "Set " + sn + " Statistics");
-      });
-    }
-
-    // Full match statistics (always shown)
-    html += statsTable(points, setsInMatch.length > 1 ? "Full Match Statistics" : "Match Statistics");
+    html += "</tbody></table>";
 
     // Serve zones
     html += "<h2>Serve Landing Zones</h2>";
     html += "<h3>" + player1 + "</h3><div class='zg'>" + zoneTable(stats.p1serve.deuceZones,"Deuce") + zoneTable(stats.p1serve.adZones,"Ad") + "</div>";
     html += "<h3>" + player2 + "</h3><div class='zg'>" + zoneTable(stats.p2serve.deuceZones,"Deuce") + zoneTable(stats.p2serve.adZones,"Ad") + "</div>";
-
-    // Serve faults by side
-    function faultBySide(pid, sideName) {
-      const filter = (p) => p.server === pid && p.serveSide === sideName &&
-        ((p.serveFault && p.serveFault !== "?") || p.firstServeFaultType);
-      const pts = points.filter(filter);
-      const counts = { Net: 0, Long: 0, Wide: 0, "Foot Fault": 0 };
-      pts.forEach(p => {
-        const ft = p.firstServeFaultType || p.serveFault;
-        if (ft && counts[ft] !== undefined) counts[ft]++;
-      });
-      return "<table class='mini'><tr><th colspan='5'>" + sideName + " Faults</th></tr><tr><th>Net</th><th>Long</th><th>Wide</th><th>Foot</th><th>Total</th></tr><tr><td>" + counts.Net + "</td><td>" + counts.Long + "</td><td>" + counts.Wide + "</td><td>" + counts["Foot Fault"] + "</td><td><b>" + pts.length + "</b></td></tr></table>";
-    }
-    html += "<h2>Serve Faults by Side</h2>";
-    html += "<h3>" + player1 + "</h3><div class='zg'>" + faultBySide("p1","Deuce") + faultBySide("p1","Ad") + "</div>";
-    html += "<h3>" + player2 + "</h3><div class='zg'>" + faultBySide("p2","Deuce") + faultBySide("p2","Ad") + "</div>";
-
-    // Shot type breakdowns: Winners, Errors, Serve+1, Return+1
-    function shotBreakdown(pid, title, field, filterOutcome) {
-      const pts = points.filter(p => p.pointWinner === pid && (!filterOutcome || filterOutcome(p)) && p[field]);
-      const counts = {};
-      pts.forEach(p => { counts[p[field]] = (counts[p[field]] || 0) + 1; });
-      const sorted = Object.entries(counts).sort((a,b) => b[1] - a[1]);
-      if (!sorted.length) return "<p style='color:#888;font-size:10px'>No data</p>";
-      return "<table class='mini'><tr><th>" + title + "</th><th>Count</th></tr>" +
-        sorted.map(([k,v]) => "<tr><td>" + k + "</td><td><b>" + v + "</b></td></tr>").join("") + "</table>";
-    }
-    // Collect error shots regardless of point winner (errors are hit by the losing player)
-    function errorShotBreakdown(pid) {
-      // errors by this player (the one who hit the ball into net/out)
-      const pts = points.filter(p => p.errorShot && p.outcome && p.outcome.includes("Error") &&
-        p.pointWinner !== pid); // p1 error → p2 won the point
-      const counts = {};
-      pts.forEach(p => { counts[p.errorShot] = (counts[p.errorShot] || 0) + 1; });
-      const sorted = Object.entries(counts).sort((a,b) => b[1] - a[1]);
-      if (!sorted.length) return "<p style='color:#888;font-size:10px'>No data</p>";
-      return "<table class='mini'><tr><th>Error Shot</th><th>Count</th></tr>" +
-        sorted.map(([k,v]) => "<tr><td>" + k + "</td><td><b>" + v + "</b></td></tr>").join("") + "</table>";
-    }
-    html += "<h2>Winners by Shot Type</h2><div class='zg'>";
-    html += "<div><h3>" + player1 + "</h3>" + shotBreakdown("p1","Winning Shot","shotType", p => p.outcome === "Winner") + "</div>";
-    html += "<div><h3>" + player2 + "</h3>" + shotBreakdown("p2","Winning Shot","shotType", p => p.outcome === "Winner") + "</div>";
-    html += "</div>";
-
-    html += "<h2>Errors by Shot Type</h2><div class='zg'>";
-    html += "<div><h3>" + player1 + "</h3>" + errorShotBreakdown("p1") + "</div>";
-    html += "<div><h3>" + player2 + "</h3>" + errorShotBreakdown("p2") + "</div>";
-    html += "</div>";
-
-    // Serve+1 and Return+1 shot breakdowns (with error indicator)
-    function plusOneBreakdown(pid, field) {
-      // For servePlusOne: pid is the server. For returnPlusOne: pid is the returner (opposite server)
-      const targetServer = field === "servePlusOne" ? pid : (pid === "p1" ? "p2" : "p1");
-      const pts = points.filter(p => p.server === targetServer && p[field]);
-      const counts = {};
-      const errors = {};
-      pts.forEach(p => {
-        const shot = p[field];
-        counts[shot] = (counts[shot] || 0) + 1;
-        // An error on the +1 shot: the point was lost by pid AND outcome includes Error
-        if (p.outcome && p.outcome.includes("Error") && p.pointWinner !== pid) {
-          errors[shot] = (errors[shot] || 0) + 1;
-        }
-      });
-      const sorted = Object.entries(counts).sort((a,b) => b[1] - a[1]);
-      if (!sorted.length) return "<p style='color:#888;font-size:10px'>No data</p>";
-      return "<table class='mini'><tr><th>Shot</th><th>Total</th><th>Errors</th></tr>" +
-        sorted.map(([k,v]) => "<tr><td>" + k + "</td><td><b>" + v + "</b></td><td style='color:#c0392b'>" + (errors[k] || 0) + "</td></tr>").join("") + "</table>";
-    }
-    html += "<h2>Serve+1 Shot Types</h2><div class='zg'>";
-    html += "<div><h3>" + player1 + "</h3>" + plusOneBreakdown("p1","servePlusOne") + "</div>";
-    html += "<div><h3>" + player2 + "</h3>" + plusOneBreakdown("p2","servePlusOne") + "</div>";
-    html += "</div>";
-    html += "<h2>Return+1 Shot Types</h2><div class='zg'>";
-    html += "<div><h3>" + player1 + "</h3>" + plusOneBreakdown("p1","returnPlusOne") + "</div>";
-    html += "<div><h3>" + player2 + "</h3>" + plusOneBreakdown("p2","returnPlusOne") + "</div>";
-    html += "</div>";
 
     // Return zones
     html += "<h2>Return Landing Zones</h2>";
@@ -2080,15 +2045,36 @@ function exportPDF(points, setup, score, matchTime, conditions) {
     html += "<div><h3>" + player2 + "</h3>" + retZoneTable(stats.p2returnZones) + "</div>";
     html += "</div>";
 
+    // Return winners / errors by shot
+    html += "<h2>Return Winners / Errors by Shot</h2><table class='st'><tbody>";
+    RETURN_HANDS.forEach(h => {
+      const a = stats.p1retShot[h], b = stats.p2retShot[h];
+      html += statRow(h + " Returns", a.total, b.total);
+      if (a.winners + b.winners + a.errors + b.errors > 0) {
+        html += statRow(h + " Return Winners", a.winners, b.winners);
+        html += statRow(h + " Return Errors", a.errors, b.errors);
+      }
+    });
+    html += "</tbody></table>";
+
     // Break points
     html += "<h2>Break Points</h2><div class='bp-grid'>";
     html += bpBox(player1, stats.p1bp, "#1a5276");
     html += bpBox(player2, stats.p2bp, "#8b0000");
     html += "</div>";
 
+    // Match timeline
+    const tl = buildTimeline(points, score);
+    if (tl.length) {
+      html += "<h2>Match Timeline</h2>" + timelineLegendHTML(setup, false);
+      tl.forEach(st => {
+        html += "<div style='margin-bottom:10px'><div style='font-size:11px;font-weight:800;color:#1b4332;margin-bottom:3px'>Set " + st.set + " &mdash; " + st.final.p1 + "-" + st.final.p2 + (st.inProgress ? " (in progress)" : "") + "</div>" + timelineSVG(st, setup, false) + "</div>";
+      });
+    }
+
     // Rally length
     html += "<h2>Rally Length</h2>";
-    RALLY_RANGES.forEach(r => { html += rallyRow(r, stats.rallyDist[r] || 0, stats.total); });
+    RALLY_RANGES.forEach(r => { html += rallyRow(r, stats.rallyDist[r] || 0, stats.total, stats.rallyWon[r]); });
 
     // Point log
     html += "<h2>Full Point Log</h2>";
@@ -2422,8 +2408,65 @@ function RestoreModal({ session, onRestore, onDiscard }) {
 }
 
 // ─── END MATCH CONFIRM MODAL ─────────────────────────────────────────────────
+// ─── MATCH TIME EDITOR ───────────────────────────────────────────────────────
+function tsToHHMM(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+}
+// Build a timestamp from "HH:MM" on the same calendar day as `dayTs`
+function hhmmToTs(hhmm, dayTs) {
+  if (!hhmm || !/^\d{1,2}:\d{2}$/.test(hhmm)) return null;
+  const [h, m] = hhmm.split(":").map(Number);
+  const d = new Date(dayTs || Date.now());
+  d.setHours(h, m, 0, 0);
+  return d.getTime();
+}
+// Inline start / end / duration fields. Calls onChange({start,end}) on every valid edit.
+function MatchTimeFields({ start, end, onChange, T = THEMES.original, compact = false }) {
+  const [sv, setSv] = useState(tsToHHMM(start));
+  const [ev, setEv] = useState(tsToHHMM(end));
+  const [dv, setDv] = useState(start && end ? String(Math.max(0, Math.round((end - start) / 60000))) : "");
+  useEffect(() => { setSv(tsToHHMM(start)); }, [start]);
+  useEffect(() => { setEv(tsToHHMM(end)); setDv(start && end ? String(Math.max(0, Math.round((end - start) / 60000))) : ""); }, [end, start]);
+  const day = start || Date.now();
+  const emit = (s, e) => { if (s && e) { if (e < s) e += 24 * 3600 * 1000; onChange({ start: s, end: e }); } };
+  const onStart = (v) => { setSv(v); const s = hhmmToTs(v, day); const e = hhmmToTs(ev, day); if (s && e) { emit(s, e); } else if (s && dv) { onChange({ start: s, end: s + Number(dv) * 60000 }); } };
+  const onEnd = (v) => { setEv(v); const s = hhmmToTs(sv, day); const e = hhmmToTs(v, day); if (s && e) emit(s, e); };
+  const onDur = (v) => { setDv(v); const s = hhmmToTs(sv, day); const mins = Number(v); if (s && v !== "" && !isNaN(mins) && mins >= 0) { const e = s + mins * 60000; setEv(tsToHHMM(e)); onChange({ start: s, end: e }); } };
+  const inp = { ...s.input, marginBottom: 0, padding: compact ? "8px 10px" : "11px 13px", fontSize: compact ? 14 : 16, background: T.bgDeep, color: T.text, border: "1px solid " + T.border, textAlign: "center" };
+  const lab = { fontSize: 9, color: T.textMuted, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 4, display: "block" };
+  return (
+    React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 },}
+      , React.createElement('div', null, React.createElement('label', { style: lab,}, "Start"), React.createElement('input', { type: "time", value: sv, onChange: e => onStart(e.target.value), style: inp,}))
+      , React.createElement('div', null, React.createElement('label', { style: lab,}, "Finish"), React.createElement('input', { type: "time", value: ev, onChange: e => onEnd(e.target.value), style: inp,}))
+      , React.createElement('div', null, React.createElement('label', { style: lab,}, "Duration (min)"), React.createElement('input', { type: "number", min: 0, step: 1, inputMode: "numeric", value: dv, onChange: e => onDur(e.target.value), style: inp,}))
+    )
+  );
+}
+
+function MatchTimeModal({ matchTime, onApply, onClose, T = THEMES.original }) {
+  const [t, setT] = useState({ start: matchTime.start || Date.now(), end: matchTime.end || Date.now() });
+  const dur = t.start && t.end ? fmtDuration(t.end - t.start) : "—";
+  return (
+    React.createElement('div', { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 },}
+      , React.createElement('div', { style: { background: T.card, borderRadius: 18, padding: 26, maxWidth: 420, width: "100%", border: "2px solid " + T.accent, boxShadow: "0 20px 60px rgba(0,0,0,0.8)", fontFamily: T.fontBody },}
+        , React.createElement('div', { style: { fontSize: 18, fontWeight: 900, color: T.text, marginBottom: 4, fontFamily: T.fontDisplay },}, "🕐 Match Times")
+        , React.createElement('div', { style: { fontSize: 11, color: T.textMuted, marginBottom: 16 },}, "Adjust the start or finish time, or type the duration and the finish time will follow.")
+        , React.createElement(MatchTimeFields, { start: t.start, end: t.end, onChange: setT, T: T,} )
+        , React.createElement('div', { style: { textAlign: "center", fontSize: 14, fontWeight: 800, color: T.accent, margin: "14px 0 18px" },}, "⏱ " + dur)
+        , React.createElement('div', { style: { display: "flex", gap: 10 },}
+          , React.createElement('button', { onClick: onClose, style: { flex: 1, padding: "12px 0", borderRadius: T.btnRadius || 10, fontWeight: 700, fontSize: 14, cursor: "pointer", border: "1px solid " + T.border, background: "transparent", color: T.textMuted },}, "Cancel")
+          , React.createElement('button', { onClick: () => onApply(t), disabled: !(t.start && t.end && t.end >= t.start), style: { flex: 1, padding: "12px 0", borderRadius: T.btnRadius || 10, fontWeight: 800, fontSize: 14, cursor: "pointer", border: "2px solid " + T.accent, background: T.accent + "25", color: T.accent, opacity: (t.start && t.end && t.end >= t.start) ? 1 : 0.5 },}, "Save Times")
+        )
+      )
+    )
+  );
+}
+
 function EndMatchModal({ setup, points, matchTime, onConfirm, onCancel, T = THEMES.original }) {
-  const elapsed = matchTime.start ? fmtDuration(Date.now() - matchTime.start) : "—";
+  const [t, setT] = useState({ start: matchTime.start || Date.now(), end: matchTime.end || Date.now() });
+  const elapsed = t.start && t.end ? fmtDuration(t.end - t.start) : "—";
   return (
     React.createElement('div', { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 },}
       , React.createElement('div', { style: { background: T.card, borderRadius: 18, padding: 28, maxWidth: 400, width: "100%", border: "2px solid " + T.danger, boxShadow: `0 20px 60px rgba(0,0,0,0.8)`, fontFamily: T.fontBody },}
@@ -2433,6 +2476,10 @@ function EndMatchModal({ setup, points, matchTime, onConfirm, onCancel, T = THEM
           , setup.player1, " vs "  , setup.player2, React.createElement('br', null )
           , React.createElement('span', { style: { color: T.accent },}, points.length, " points" ), " logged · "   , elapsed, " elapsed"
         )
+        , React.createElement('div', { style: { background: T.card2, borderRadius: 8, padding: "10px 12px", marginBottom: 14, border: "1px solid " + T.border },}
+          , React.createElement('div', { style: { fontSize: 10, color: T.textMuted, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 8 },}, "Match times — adjust if needed")
+          , React.createElement(MatchTimeFields, { start: t.start, end: t.end, onChange: setT, T: T, compact: true,} )
+        )
         , React.createElement('div', { style: { background: T.card2, borderRadius: 8, padding: "10px 14px", marginBottom: 20, fontSize: 12, color: T.textMuted, border: "1px solid " + T.border },}, "💡 Make sure you have "
                , React.createElement('b', { style: { color: T.text },}, "exported your CSV"  ), " before ending — data is not saved automatically."
         )
@@ -2440,7 +2487,7 @@ function EndMatchModal({ setup, points, matchTime, onConfirm, onCancel, T = THEM
           , React.createElement('button', { onClick: onCancel, style: { flex: 1, padding: "13px 0", borderRadius: T.btnRadius || 10, fontWeight: 700, fontSize: 14, cursor: "pointer", border: "1px solid " + T.border, background: "transparent", color: T.textMuted, fontFamily: T.fontBody },}, "← Keep Tagging"
 
           )
-          , React.createElement('button', { onClick: onConfirm, style: { flex: 1, padding: "13px 0", borderRadius: T.btnRadius || 10, fontWeight: 800, fontSize: 14, cursor: "pointer", border: "2px solid " + T.danger, background: T.danger + "25", color: T.danger, fontFamily: T.fontDisplay },}, "⏹ End Match"
+          , React.createElement('button', { onClick: () => onConfirm(t), style: { flex: 1, padding: "13px 0", borderRadius: T.btnRadius || 10, fontWeight: 800, fontSize: 14, cursor: "pointer", border: "2px solid " + T.danger, background: T.danger + "25", color: T.danger, fontFamily: T.fontDisplay },}, "⏹ End Match"
 
           )
         )
@@ -2626,10 +2673,9 @@ function ScoreOverwriteModal({ setup, score, onApply, onClose, T = THEMES.origin
 const EMPTY_TAG = {
   serveType: null, serveSpin: null, serveSide: null, serveZone: null, serveFault: null,
   dfFaultType: null,
-  firstServeFaultType: null, firstServeFaultZone: null,
   returnHand: null, returnPosition: null, returnLandZone: null,
-  servePlusOne: null, sp1Dir: null,
-  returnPlusOne: null, rp1Dir: null,
+  servePlusOne: null, sp1Dir: null, sp1Result: null,
+  returnPlusOne: null, rp1Dir: null, rp1Result: null,
   rallyLength: null, outcome: null, shotType: null, errorShot: null, errorDirection: null,
   netApproach: false, netPlayer: null, pressurePoint: false, pointWinner: null,
 };
@@ -2647,6 +2693,15 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast
   const { player1, player2 } = setup;
   const { server } = score;
   const setT = (k, v) => setTag(p => ({ ...p, [k]: v }));
+  const [letFlash, setLetFlash] = useState(null);
+  const letTimer = useRef(null);
+  const callLet = () => {
+    const st = tag.serveType || "1st Serve";
+    setTag(prev => ({ ...EMPTY_TAG, serveType: prev.serveType || "1st Serve" }));
+    setLetFlash("LET — replay " + st);
+    if (letTimer.current) clearTimeout(letTimer.current);
+    letTimer.current = setTimeout(() => setLetFlash(null), 1800);
+  };
   const serverName = server === "p1" ? player1 : player2;
   const returnerName = server === "p1" ? player2 : player1;
 
@@ -2721,7 +2776,7 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast
     (noRally || (resolvedWinner || tag.pointWinner));
 
   // Auto-derive serve side from current game score (no manual input needed)
-  const autoServeSide = deriveServeSide(score.points);
+  const autoServeSide = deriveServeSide(score);
 
   return (
     React.createElement('div', { style: { display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" },}
@@ -2800,6 +2855,14 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast
               )
             ))
           )
+          , (tag.outcome === "Return Error" || tag.outcome === "Return Winner") && (
+            React.createElement('div', { style: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: fw ? 8 : 5, marginTop: 6 },}
+              , RETURN_HANDS.map(h => (
+                React.createElement('button', { key: h, style: { ..._s.chip(tag.returnHand === h, PURPLE), textAlign: "center", whiteSpace: "nowrap", padding: fw ? "10px 4px" : "6px 3px", fontSize: 12 },
+                  onClick: () => setT("returnHand", tag.returnHand === h ? null : h),}, shotLabel(h))
+              ))
+            )
+          )
           , tag.outcome && ["Ace","Double Fault","Return Error","Return Winner"].includes(tag.outcome) && tag.serveType && (
             React.createElement('div', { style: { fontSize: 9, color: "#52c41a", fontWeight: 600, textAlign: "center", marginTop: 3 },}
               , "Tap again to log · or scroll down to add details"
@@ -2821,6 +2884,11 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast
                 , o
               )
             ))
+            , React.createElement('button', { key: "let", style: { ..._s.chip(!!letFlash, "#5a7a90"), borderStyle: "dashed" },
+                onClick: callLet,}, "Let")
+          )
+          , letFlash && (
+            React.createElement('div', { style: { marginTop: 5, padding: "5px 10px", borderRadius: 6, background: "#7fa8c022", border: "1px solid #7fa8c080", color: "#b0d0e8", fontSize: fw ? 13 : 11, fontWeight: 700, textAlign: "center" },}, "↺ " + letFlash + " (not logged)")
           )
         )
 
@@ -2848,11 +2916,11 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast
               , inFaultMode ? "⚡ FAULT — choose type ↓" : "⚡ Mark as 1st Serve Fault"
             )
             , inFaultMode && (
-              React.createElement('div', { style: { marginTop: fw ? 10 : 8, padding: fw ? 12 : 8, background: DANGER + "10", border: "2px solid " + DANGER + "60", borderRadius: 10 },}
-                , React.createElement('div', { style: { fontSize: fw ? 12 : 10, color: DANGER, fontWeight: 900, letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 },}, "Fault Type — select one" )
-                , React.createElement('div', { style: { display: "grid", gridTemplateColumns: fw ? "repeat(4, 1fr)" : "repeat(2, 1fr)", gap: fw ? 8 : 6 },}
+              React.createElement('div', { style: { marginTop: 6 },}
+                , React.createElement('div', { style: { fontSize: 9, color: DANGER, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase", marginBottom: 4 },}, "Fault Type" )
+                , React.createElement('div', { style: _s.chipRow,}
                   , SERVE_FAULT_TYPES.map(ft => (
-                    React.createElement('button', { key: ft, style: { padding: fw ? "16px 8px" : "12px 8px", borderRadius: 8, fontSize: fw ? 16 : 13, fontWeight: 800, cursor: "pointer", border: "2.5px solid " + (tag.serveFault === ft ? DANGER : "#5a2a2a"), background: tag.serveFault === ft ? DANGER : DANGER + "18", color: tag.serveFault === ft ? WHITE : "#e08080", letterSpacing: 0.5 },
+                    React.createElement('button', { key: ft, style: { padding: "6px 10px", borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer", border: "2px solid " + (tag.serveFault === ft ? DANGER : "#3a1a1a"), background: tag.serveFault === ft ? DANGER : "transparent", color: tag.serveFault === ft ? WHITE : "#c06060" },
                       onClick: () => setT("serveFault", ft),}, ft)
                   ))
                 )
@@ -2860,37 +2928,18 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast
             )
           )
         )
-
-        /* Double Fault type — shows INLINE inside Serve section when DF outcome is selected */
-        , isDoubleFault && (
-          React.createElement('div', { style: { marginTop: fw ? 12 : 10, padding: fw ? 12 : 10, background: DANGER + "10", border: "2px solid " + DANGER + "60", borderRadius: 10 },}
-            , React.createElement('div', { style: { fontSize: fw ? 12 : 10, color: DANGER, fontWeight: 900, letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 },}, "⚡ Double Fault Type — select one" )
-            , React.createElement('div', { style: { display: "grid", gridTemplateColumns: fw ? "repeat(4, 1fr)" : "repeat(2, 1fr)", gap: fw ? 8 : 6 },}
-              , SERVE_FAULT_TYPES.map(ft => (
-                React.createElement('button', { key: "df-"+ft, onClick: () => setT("dfFaultType", tag.dfFaultType === ft ? null : ft),
-                  style: { padding: fw ? "16px 8px" : "12px 8px", borderRadius: 8, fontSize: fw ? 16 : 13, fontWeight: 800, cursor: "pointer",
-                    border: "2.5px solid " + (tag.dfFaultType === ft ? DANGER : "#5a2a2a"),
-                    background: tag.dfFaultType === ft ? DANGER : DANGER + "18",
-                    color: tag.dfFaultType === ft ? WHITE : "#e08080",
-                    letterSpacing: 0.5 },}
-                  , ft
-                )
-              ))
-            )
-          )
-        )
       )
 
-      /* ② RETURN — hidden for 1st serve fault AND double fault (no return on DF) */
-      , !inFaultMode && !isDoubleFault && (
+      /* ② RETURN */
+      , !inFaultMode && (
         React.createElement('div', { style: { ..._s.tagSection, background: T.bgDeep, borderBottom: "1px solid " + T.border },}
           , React.createElement(StepHeader, { num: "②", label: "Return", fontFamily: T.fontDisplay, color: "#5aff9a", large: fw,} )
           , React.createElement('div', { style: { marginBottom: 6 },}
             , React.createElement('div', { style: _s.sectionLabel,}, "Hand")
             , React.createElement('div', { style: _s.chipRow,}
               , RETURN_HANDS.map(h => (
-                React.createElement('button', { key: h, style: { ..._s.chip(tag.returnHand === h, PURPLE), flex: 1, textAlign: "center" },
-                  onClick: () => setT("returnHand", tag.returnHand === h ? null : h),}, h)
+                React.createElement('button', { key: h, style: { ..._s.chip(tag.returnHand === h, PURPLE), flex: 1, textAlign: "center", whiteSpace: "nowrap" },
+                  onClick: () => setT("returnHand", tag.returnHand === h ? null : h),}, shotLabel(h))
               ))
             )
           )
@@ -2922,19 +2971,16 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast
         React.createElement('div', { style: { ..._s.tagSection, background: T.bgDeep, borderBottom: "1px solid " + T.border },}
           , React.createElement(StepHeader, { num: "③", label: "Serve +1" , fontFamily: T.fontDisplay, color: "#5ab8ff", large: fw,} )
           , React.createElement('div', { style: { ..._s.sectionLabel, marginBottom: 4 },}, "Shot Type" )
-          , React.createElement('div', { style: { ..._s.chipRow, marginBottom: 4 },}
-            , ["Forehand","Backhand","Slice","Volley"].map(o => (
-              React.createElement('button', { key: o, style: { ..._s.chip(tag.servePlusOne === o, NAVY), flex: 1, textAlign: "center", fontSize: 12 },
-                onClick: () => setT("servePlusOne", tag.servePlusOne === o ? null : o),}, o)
+          , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: fw ? 8 : 5 },}
+            , SP1_SHOTS.map(o => (
+              React.createElement('button', { key: o, style: { ..._s.chip(tag.servePlusOne === o, NAVY), textAlign: "center", fontSize: 12, whiteSpace: "nowrap", padding: fw ? "10px 4px" : "6px 3px" },
+                onClick: () => setTag(p => {
+                  const nv = p.servePlusOne === o ? null : o;
+                  return { ...p, servePlusOne: nv, sp1Dir: plusOneNoDir(nv) ? null : p.sp1Dir, sp1Result: (nv && nv !== "N/A") ? p.sp1Result : null };
+                }),}, shotLabel(o))
             ))
           )
-          , React.createElement('div', { style: _s.chipRow,}
-            , ["Approach","Drop Shot","Overhead","N/A"].map(o => (
-              React.createElement('button', { key: o, style: { ..._s.chip(tag.servePlusOne === o, NAVY), flex: 1, textAlign: "center", fontSize: 12 },
-                onClick: () => setT("servePlusOne", tag.servePlusOne === o ? null : o),}, o)
-            ))
-          )
-          , tag.servePlusOne && tag.servePlusOne !== "N/A" && tag.servePlusOne !== "Drop Shot" && tag.servePlusOne !== "Overhead" && (
+          , !plusOneNoDir(tag.servePlusOne) && (
             React.createElement('div', { style: { marginTop: 6 },}
               , React.createElement('div', { style: { ..._s.sectionLabel, marginBottom: 4 },}, "Direction " , React.createElement('span', { style: { fontWeight: 400, color: MUTED, fontSize: 9, textTransform: "none", letterSpacing: 0 },}, "(optional)"))
               , React.createElement('div', { style: _s.chipRow,}
@@ -2942,6 +2988,31 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast
                   React.createElement('button', { key: d, style: { ..._s.chip(tag.sp1Dir === d, "#2c5f8a"), flex: 1, textAlign: "center", fontSize: 12 },
                     onClick: () => setT("sp1Dir", tag.sp1Dir === d ? null : d),}, d)
                 ))
+              )
+            )
+          )
+          , tag.servePlusOne && tag.servePlusOne !== "N/A" && (
+            React.createElement('div', { style: { marginTop: 6 },}
+              , React.createElement('div', { style: { ..._s.sectionLabel, marginBottom: 4 },}, "Result " , React.createElement('span', { style: { fontWeight: 400, color: MUTED, fontSize: 9, textTransform: "none", letterSpacing: 0 },}, "(leave blank if rally continued)"))
+              , React.createElement('div', { style: _s.chipRow,}
+                , PLUS_ONE_RESULTS.map(r => (
+                  React.createElement('button', { key: r, style: { ..._s.chip(tag.sp1Result === r, r === "Winner" ? "#2f9e44" : DANGER), flex: 1, textAlign: "center", fontSize: 13, fontWeight: 800 },
+                    onClick: () => setTag(p => {
+                      if (p.sp1Result === r) return { ...p, sp1Result: null };
+                      const shotOk = SHOT_TYPES.includes(p.servePlusOne);
+                      if (r === "Winner") {
+                        return { ...p, sp1Result: r, rallyLength: "0-4", pointWinner: server,
+                          outcome: (!p.outcome || p.outcome === "Winner") ? "Winner" : p.outcome,
+                          shotType: p.shotType || (shotOk ? p.servePlusOne : null), errorShot: null, errorDirection: null };
+                      }
+                      return { ...p, sp1Result: r, rallyLength: "0-4", pointWinner: (server === "p1" ? "p2" : "p1"),
+                        outcome: (p.outcome === "Forced Error" || p.outcome === "Unforced Error") ? p.outcome : null,
+                        errorShot: p.errorShot || (shotOk ? p.servePlusOne : null), shotType: null };
+                    }),}, r === "Winner" ? "✓ Winner" : "✗ Error")
+                ))
+              )
+              , tag.sp1Result === "Error" && !(tag.outcome === "Forced Error" || tag.outcome === "Unforced Error") && (
+                React.createElement('div', { style: { fontSize: 10, color: ORANGE, fontWeight: 600, marginTop: 4 },}, "→ Pick Forced / Unforced Error in Outcome below")
               )
             )
           )
@@ -2953,19 +3024,16 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast
         React.createElement('div', { style: { ..._s.tagSection, background: T.bgDeep, borderBottom: "1px solid " + T.border },}
           , React.createElement(StepHeader, { num: "④", label: "Return +1" , fontFamily: T.fontDisplay, color: "#5affc8", large: fw,} )
           , React.createElement('div', { style: { ..._s.sectionLabel, marginBottom: 4 },}, "Shot Type" )
-          , React.createElement('div', { style: { ..._s.chipRow, marginBottom: 4 },}
-            , ["Forehand","Backhand","Slice","Volley"].map(o => (
-              React.createElement('button', { key: o, style: { ..._s.chip(tag.returnPlusOne === o, TEAL), flex: 1, textAlign: "center", fontSize: 12 },
-                onClick: () => setT("returnPlusOne", tag.returnPlusOne === o ? null : o),}, o)
+          , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: fw ? 8 : 5 },}
+            , RP1_SHOTS.map(o => (
+              React.createElement('button', { key: o, style: { ..._s.chip(tag.returnPlusOne === o, TEAL), textAlign: "center", fontSize: 12, whiteSpace: "nowrap", padding: fw ? "10px 4px" : "6px 3px" },
+                onClick: () => setTag(p => {
+                  const nv = p.returnPlusOne === o ? null : o;
+                  return { ...p, returnPlusOne: nv, rp1Dir: plusOneNoDir(nv) ? null : p.rp1Dir, rp1Result: (nv && nv !== "N/A") ? p.rp1Result : null };
+                }),}, shotLabel(o))
             ))
           )
-          , React.createElement('div', { style: _s.chipRow,}
-            , ["Approach","Drop Shot","Lob","N/A"].map(o => (
-              React.createElement('button', { key: o, style: { ..._s.chip(tag.returnPlusOne === o, TEAL), flex: 1, textAlign: "center", fontSize: 12 },
-                onClick: () => setT("returnPlusOne", tag.returnPlusOne === o ? null : o),}, o)
-            ))
-          )
-          , tag.returnPlusOne && tag.returnPlusOne !== "N/A" && tag.returnPlusOne !== "Drop Shot" && tag.returnPlusOne !== "Lob" && (
+          , !plusOneNoDir(tag.returnPlusOne) && (
             React.createElement('div', { style: { marginTop: 6 },}
               , React.createElement('div', { style: { ..._s.sectionLabel, marginBottom: 4 },}, "Direction " , React.createElement('span', { style: { fontWeight: 400, color: MUTED, fontSize: 9, textTransform: "none", letterSpacing: 0 },}, "(optional)"))
               , React.createElement('div', { style: _s.chipRow,}
@@ -2973,6 +3041,31 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast
                   React.createElement('button', { key: d, style: { ..._s.chip(tag.rp1Dir === d, "#1a4d3e"), flex: 1, textAlign: "center", fontSize: 12 },
                     onClick: () => setT("rp1Dir", tag.rp1Dir === d ? null : d),}, d)
                 ))
+              )
+            )
+          )
+          , tag.returnPlusOne && tag.returnPlusOne !== "N/A" && (
+            React.createElement('div', { style: { marginTop: 6 },}
+              , React.createElement('div', { style: { ..._s.sectionLabel, marginBottom: 4 },}, "Result " , React.createElement('span', { style: { fontWeight: 400, color: MUTED, fontSize: 9, textTransform: "none", letterSpacing: 0 },}, "(leave blank if rally continued)"))
+              , React.createElement('div', { style: _s.chipRow,}
+                , PLUS_ONE_RESULTS.map(r => (
+                  React.createElement('button', { key: r, style: { ..._s.chip(tag.rp1Result === r, r === "Winner" ? "#2f9e44" : DANGER), flex: 1, textAlign: "center", fontSize: 13, fontWeight: 800 },
+                    onClick: () => setTag(p => {
+                      if (p.rp1Result === r) return { ...p, rp1Result: null };
+                      const shotOk = SHOT_TYPES.includes(p.returnPlusOne);
+                      if (r === "Winner") {
+                        return { ...p, rp1Result: r, rallyLength: "0-4", pointWinner: (server === "p1" ? "p2" : "p1"),
+                          outcome: (!p.outcome || p.outcome === "Winner") ? "Winner" : p.outcome,
+                          shotType: p.shotType || (shotOk ? p.returnPlusOne : null), errorShot: null, errorDirection: null };
+                      }
+                      return { ...p, rp1Result: r, rallyLength: "0-4", pointWinner: server,
+                        outcome: (p.outcome === "Forced Error" || p.outcome === "Unforced Error") ? p.outcome : null,
+                        errorShot: p.errorShot || (shotOk ? p.returnPlusOne : null), shotType: null };
+                    }),}, r === "Winner" ? "✓ Winner" : "✗ Error")
+                ))
+              )
+              , tag.rp1Result === "Error" && !(tag.outcome === "Forced Error" || tag.outcome === "Unforced Error") && (
+                React.createElement('div', { style: { fontSize: 10, color: ORANGE, fontWeight: 600, marginTop: 4 },}, "→ Pick Forced / Unforced Error in Outcome below")
               )
             )
           )
@@ -3027,6 +3120,37 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast
                   , isAce || isReturnError ? (server === "p1" ? player1 : player2)
                     : (server === "p1" ? player2 : player1)
                 )
+              )
+            )
+          )
+
+          /* Return shot — which wing for return winner / error */
+          , (isReturnError || isReturnWinner) && (
+            React.createElement('div', { style: { marginTop: 8 },}
+              , React.createElement('div', { style: { fontSize: 9, color: "#c89cf0", fontWeight: 700, letterSpacing: 2, textTransform: "uppercase" },}, isReturnWinner ? "Return Winner — Shot" : "Return Error — Shot")
+              , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: fw ? 8 : 5, marginTop: 6 },}
+              , RETURN_HANDS.map(h => (
+                React.createElement('button', { key: h, style: { ..._s.chip(tag.returnHand === h, PURPLE), textAlign: "center", whiteSpace: "nowrap", padding: fw ? "10px 4px" : "6px 3px", fontSize: 12 },
+                  onClick: () => setT("returnHand", tag.returnHand === h ? null : h),}, shotLabel(h))
+              ))
+            )
+            )
+          )
+
+          /* Double Fault type */
+          , isDoubleFault && (
+            React.createElement('div', { style: { marginTop: 8 },}
+              , React.createElement('div', { style: { fontSize: 9, color: DANGER, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase", marginBottom: 5 },}, "Double Fault Type"  )
+              , React.createElement('div', { style: _s.chipRow,}
+                , SERVE_FAULT_TYPES.map(ft => (
+                  React.createElement('button', { key: ft, onClick: () => setT("dfFaultType", tag.dfFaultType === ft ? null : ft),
+                    style: { padding: "7px 12px", borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer",
+                      border: "2px solid " + (tag.dfFaultType === ft ? DANGER : "#3a1a1a"),
+                      background: tag.dfFaultType === ft ? DANGER : "transparent",
+                      color: tag.dfFaultType === ft ? WHITE : "#c06060" },}
+                    , ft
+                  )
+                ))
               )
             )
           )
@@ -3181,7 +3305,7 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast
           React.createElement('button', {
             style: { ...s.btn(tag.serveFault && tag.serveFault !== "?" ? DANGER : "#3a1a1a", !tag.serveFault || tag.serveFault === "?"), flex: 2, padding: fw ? "16px 0" : "12px 0", fontSize: fw ? 18 : 15 },
             disabled: !tag.serveFault || tag.serveFault === "?",
-            onClick: () => setTag(() => ({ ...EMPTY_TAG, serveType: "2nd Serve", serveSide: tag.serveSide, firstServeFaultType: tag.serveFault, firstServeFaultZone: tag.serveZone })),}, "⚡ Fault → 2nd Serve"
+            onClick: () => setTag(() => ({ ...EMPTY_TAG, serveType: "2nd Serve", serveSide: tag.serveSide })),}, "⚡ Fault → 2nd Serve"
 
           )
         ) : (
@@ -3195,6 +3319,18 @@ function TagPanel({ setup, score, tag, setTag, onLog, onUndo, onRedo, onEditLast
 }
 
 // ─── POINT LOG TABLE ──────────────────────────────────────────────────────────
+function snapGames(p) {
+  const ss = p.scoreSnapshot; if (!ss || !ss.games) return "—";
+  return ss.games.p1 + "-" + ss.games.p2;
+}
+function snapPoints(p) {
+  const ss = p.scoreSnapshot; if (!ss || !ss.points) return "—";
+  const a = ss.points.p1, b = ss.points.p2;
+  if (ss.tieBreak || ss.superTieBreak) return (ss.superTieBreak ? "STB " : "TB ") + a + "-" + b;
+  if (a === "AD") return "AD-40";
+  if (b === "AD") return "40-AD";
+  return a + "-" + b;
+}
 function PointLog({ points, setup }) {
   const getName = pid => pid === "p1" ? setup.player1 : setup.player2;
   return (
@@ -3202,17 +3338,14 @@ function PointLog({ points, setup }) {
       , React.createElement('div', { style: { fontSize: 11, color: MUTED, marginBottom: 5, fontWeight: 700 },}, points.length, " points logged"  )
       , !points.length && React.createElement('div', { style: { textAlign: "center", color: MUTED, marginTop: 40, fontSize: 13 },}, "No points logged yet."   )
       , [...points].reverse().map((p, i) => (
-        p._isCorrection
-          ? React.createElement('div', { key: p.id, style: { padding: "6px 10px", marginBottom: 2, borderRadius: 5, background: "#5abaff15", border: "1px solid #5abaff40", fontSize: 11, color: "#5abaff", fontWeight: 700, display: "flex", alignItems: "center", gap: 8 },}
-              , React.createElement('span', null, "📝")
-              , React.createElement('span', { style: { flex: 1 },}, p._correctionLabel || "Score corrected")
-            )
-          : React.createElement('div', { key: p.id, style: { display: "grid", gridTemplateColumns: "20px 60px 40px 34px 40px 40px 60px 60px 18px 18px", gap: 3, alignItems: "center", padding: "5px 5px", borderRadius: 5, marginBottom: 2, background: i % 2 === 0 ? CARD2 : "transparent", fontSize: 11, color: MUTED },}
+        React.createElement('div', { key: p.id, style: { display: "grid", gridTemplateColumns: "20px 60px 34px 48px 40px 34px 40px 40px 60px 60px 18px 18px", gap: 3, alignItems: "center", padding: "5px 5px", borderRadius: 5, marginBottom: 2, background: i % 2 === 0 ? CARD2 : "transparent", fontSize: 11, color: MUTED },}
           , React.createElement('span', { style: { color: ACCENT, fontWeight: 700 },}, points.length - i)
           , React.createElement('span', { style: { color: WHITE, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },}, getName(p.server))
+          , React.createElement('span', { style: { color: "#b0d0e8", fontWeight: 700 },}, snapGames(p))
+          , React.createElement('span', { style: { color: ACCENT, fontWeight: 700, fontSize: 10 },}, snapPoints(p))
           , React.createElement('span', null, _optionalChain([p, 'access', _5 => _5.serveType, 'optionalAccess', _6 => _6.replace, 'call', _7 => _7(" Serve","")]))
           , React.createElement('span', null, p.serveDir)
-          , React.createElement('span', { style: { color: p.serveFault && p.serveFault !== "?" ? DANGER : MUTED },}, p.serveFault && p.serveFault !== "?" ? p.serveFault : (p.returnHand ? p.returnHand.slice(0,2) : "—"))
+          , React.createElement('span', { style: { color: p.serveFault && p.serveFault !== "?" ? DANGER : MUTED },}, p.serveFault && p.serveFault !== "?" ? p.serveFault : (p.returnHand ? shotAbbr(p.returnHand) : "—"))
           , React.createElement('span', null, p.rallyLength || "—")
           , React.createElement('span', { style: { color: p.outcome === "Winner" || p.outcome === "Ace" ? "#52c41a" : _optionalChain([p, 'access', _8 => _8.outcome, 'optionalAccess', _9 => _9.includes, 'call', _10 => _10("Error")]) || p.outcome === "Double Fault" ? DANGER : MUTED, fontSize: 10 },}
             , p.outcome ? (p.errorShot ? p.outcome.includes("Un") ? "UE" : "FE" + "-" + p.errorShot.slice(0,3) : p.outcome) : "—"
@@ -3227,7 +3360,7 @@ function PointLog({ points, setup }) {
 }
 
 // ─── STATS / REPORT SCREEN ────────────────────────────────────────────────────
-function StatsScreen({ points, setup, score, matchTime }) {
+function StatsScreen({ points, setup, score, matchTime, onEditTimes }) {
   const { player1, player2 } = setup;
   const duration = matchTime.start && matchTime.end ? matchTime.end - matchTime.start : null;
   const [repTab, setRepTab] = useState("overview");
@@ -3272,7 +3405,7 @@ function StatsScreen({ points, setup, score, matchTime }) {
         )
       )
       , React.createElement('div', { style: { display: "flex", background: "#0a1628", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 },}
-        , [["overview","Overview"],["serve","Serve Zones"],["return","Return"],["rally","Rally & BP"]].map(([k, label]) => (
+        , [["overview","Overview"],["timeline","Timeline"],["serve","Serve Zones"],["return","Return"],["rally","Rally & BP"]].map(([k, label]) => (
           React.createElement('button', { key: k, onClick: () => setRepTab(k), style: { flex: 1, padding: "7px 0", fontSize: 11, fontWeight: 700, cursor: "pointer", color: repTab === k ? ACCENT : MUTED, borderBottom: repTab === k ? "2px solid " + ACCENT : "2px solid transparent", background: "transparent", border: "none" },}, label)
         ))
       )
@@ -3306,6 +3439,7 @@ function StatsScreen({ points, setup, score, matchTime }) {
               , matchTime.start && React.createElement('div', { style: { fontSize: 11, color: MUTED },}, "🕐 Start: "  , fmtTime(matchTime.start))
               , matchTime.end && React.createElement('div', { style: { fontSize: 11, color: MUTED },}, "🕐 End: "  , fmtTime(matchTime.end))
               , React.createElement('div', { style: { fontSize: 16, fontWeight: 800, color: ACCENT, marginTop: 2 },}, "⏱ " , duration ? fmtDuration(duration) : "In progress")
+              , onEditTimes && React.createElement('button', { onClick: onEditTimes, style: { marginTop: 5, padding: "4px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer", border: "1px solid #1e3a5f", background: "transparent", color: MUTED },}, "✎ Edit times")
             )
           )
         )
@@ -3324,6 +3458,10 @@ function StatsScreen({ points, setup, score, matchTime }) {
               , React.createElement(BarStat, { label: "Winners", p1: stats.p1winners, p2: stats.p2winners,} )
               , React.createElement(BarStat, { label: "Unforced Errors" , p1: stats.p1ue, p2: stats.p2ue,} )
               , React.createElement(BarStat, { label: "Forced Errors" , p1: stats.p1fe, p2: stats.p2fe,} )
+              , React.createElement(BarStat, { label: "Serve +1 Winners" , p1: stats.p1sp1.winners, p2: stats.p2sp1.winners,} )
+              , React.createElement(BarStat, { label: "Serve +1 Errors" , p1: stats.p1sp1.errors, p2: stats.p2sp1.errors,} )
+              , React.createElement(BarStat, { label: "Return +1 Winners" , p1: stats.p1rp1.winners, p2: stats.p2rp1.winners,} )
+              , React.createElement(BarStat, { label: "Return +1 Errors" , p1: stats.p1rp1.errors, p2: stats.p2rp1.errors,} )
               , React.createElement(BarStat, { label: "1st Serve In %"   , p1: pct(stats.p1serve.firstIn, stats.p1serve.total), p2: pct(stats.p2serve.firstIn, stats.p2serve.total),} )
               , React.createElement(BarStat, { label: "1st Serve Win %"   , p1: pct(stats.p1serve.firstWon, stats.p1serve.firstIn), p2: pct(stats.p2serve.firstWon, stats.p2serve.firstIn),} )
               , React.createElement(BarStat, { label: "2nd Serve Win %"   , p1: pct(stats.p1serve.secondWon, stats.p1serve.secondIn), p2: pct(stats.p2serve.secondWon, stats.p2serve.secondIn),} )
@@ -3335,6 +3473,19 @@ function StatsScreen({ points, setup, score, matchTime }) {
             , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 },}
               , React.createElement(StatCard, { title: "Aces", value: stats.p1serve.aces + " / " + stats.p2serve.aces, sub: player1 + " / " + player2,} )
               , React.createElement(StatCard, { title: "Double Faults" , value: stats.p1serve.dfs + " / " + stats.p2serve.dfs, color: DANGER,} )
+            )
+          )
+        ) : repTab === "timeline" ? (
+          React.createElement(React.Fragment, null
+            , React.createElement('div', { style: { ...s.statCard, marginBottom: 10 },}
+              , React.createElement('div', { style: s.statTitle,}, "Match Timeline — games & scores")
+              , React.createElement('div', { dangerouslySetInnerHTML: { __html: timelineLegendHTML(setup, true) } })
+              , buildTimeline(points, score).filter(st => setFilter === "all" || st.set === Number(setFilter)).map(st => (
+                React.createElement('div', { key: st.set, style: { marginBottom: 12 },}
+                  , React.createElement('div', { style: { fontSize: 12, fontWeight: 800, color: ACCENT, marginBottom: 4 },}, "Set " + st.set + " — " + st.final.p1 + "-" + st.final.p2 + (st.inProgress ? " (in progress)" : ""))
+                  , React.createElement('div', { style: { overflowX: "auto" }, dangerouslySetInnerHTML: { __html: timelineSVG(st, setup, true) } })
+                )
+              ))
             )
           )
         ) : repTab === "serve" ? (
@@ -3382,11 +3533,31 @@ function StatsScreen({ points, setup, score, matchTime }) {
               , React.createElement('div', { style: { fontWeight: 800, fontSize: 13, color: ORANGE },}, player2)
             )
             , React.createElement('div', { style: { ...s.statCard, marginBottom: 10 },}
-              , ["Forehand","Backhand"].map(hand => {
-                const p1c = filteredPoints.filter(p => p.server === "p2" && p.returnHand === hand).length;
-                const p2c = filteredPoints.filter(p => p.server === "p1" && p.returnHand === hand).length;
-                return React.createElement(BarStat, { key: hand, label: hand + " Return", p1: p1c, p2: p2c,} );
+              , React.createElement('div', { style: s.statTitle,}, "Returns by Shot")
+              , RETURN_HANDS.map(hand => (
+                React.createElement(BarStat, { key: hand, label: hand + " Return", p1: stats.p1retShot[hand].total, p2: stats.p2retShot[hand].total,} )
+              ))
+            )
+            , React.createElement('div', { style: { ...s.statCard, marginBottom: 10 },}
+              , React.createElement('div', { style: s.statTitle,}, "Return Winners / Errors by Shot")
+              , RETURN_HANDS.map(hand => {
+                const a = stats.p1retShot[hand], b = stats.p2retShot[hand];
+                if (a.winners + b.winners + a.errors + b.errors === 0) return null;
+                return React.createElement('div', { key: hand,}
+                  , React.createElement(BarStat, { label: shotLabel(hand) + " Ret Winners", p1: a.winners, p2: b.winners,} )
+                  , React.createElement(BarStat, { label: shotLabel(hand) + " Ret Errors", p1: a.errors, p2: b.errors,} )
+                );
               })
+              , RETURN_HANDS.every(h => { const a = stats.p1retShot[h], b = stats.p2retShot[h]; return a.winners + b.winners + a.errors + b.errors === 0; }) && (
+                React.createElement('div', { style: { fontSize: 11, color: MUTED },}, "No return winners or errors tagged with a shot yet.")
+              )
+            )
+            , React.createElement('div', { style: { ...s.statCard, marginBottom: 10 },}
+              , React.createElement('div', { style: s.statTitle,}, "Serve +1 / Return +1")
+              , React.createElement(BarStat, { label: "Serve +1 Winners", p1: stats.p1sp1.winners, p2: stats.p2sp1.winners,} )
+              , React.createElement(BarStat, { label: "Serve +1 Errors", p1: stats.p1sp1.errors, p2: stats.p2sp1.errors,} )
+              , React.createElement(BarStat, { label: "Return +1 Winners", p1: stats.p1rp1.winners, p2: stats.p2rp1.winners,} )
+              , React.createElement(BarStat, { label: "Return +1 Errors", p1: stats.p1rp1.errors, p2: stats.p2rp1.errors,} )
             )
             , React.createElement('div', { style: { fontWeight: 800, fontSize: 13, color: ACCENT, marginBottom: 6 },}, player1, " — Return Landing"   )
             , React.createElement(ReturnZoneHeatmap, { title: "", zones: stats.p1returnZones,} )
@@ -3416,16 +3587,34 @@ function StatsScreen({ points, setup, score, matchTime }) {
             /* Rally distribution */
             , React.createElement('div', { style: { ...s.statCard, marginBottom: 10 },}
               , React.createElement('div', { style: s.statTitle,}, "Rally Length Distribution"  )
+              , React.createElement('div', { style: { display: "flex", justifyContent: "flex-end", gap: 12, fontSize: 10, fontWeight: 700, marginBottom: 8 },}
+                , React.createElement('span', { style: { color: P1C },}, "■ " + player1)
+                , React.createElement('span', { style: { color: P2C },}, "■ " + player2)
+              )
               , RALLY_RANGES.map(r => {
                 const cnt = stats.rallyDist[r] || 0;
+                const w = stats.rallyWon[r] || { p1: 0, p2: 0 };
+                const a = pct(w.p1, cnt), b = pct(w.p2, cnt);
                 return (
-                  React.createElement('div', { key: r, style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 7 },}
-                    , React.createElement('span', { style: { fontSize: 12, color: MUTED, width: 36, fontWeight: 700 },}, r)
-                    , React.createElement('div', { style: { flex: 1, background: "#1e3a5f", borderRadius: 4, height: 8 },}
-                      , React.createElement('div', { style: { width: pct(cnt, stats.total) + "%", height: 8, background: COURT_GREEN, borderRadius: 4, transition: "width 0.3s" },} )
+                  React.createElement('div', { key: r, style: { marginBottom: 12 },}
+                    , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 4 },}
+                      , React.createElement('span', { style: { fontSize: 12, color: MUTED, width: 36, fontWeight: 700 },}, r)
+                      , React.createElement('div', { style: { flex: 1, background: "#1e3a5f", borderRadius: 4, height: 8 },}
+                        , React.createElement('div', { style: { width: pct(cnt, stats.total) + "%", height: 8, background: COURT_GREEN, borderRadius: 4, transition: "width 0.3s" },} )
+                      )
+                      , React.createElement('span', { style: { fontSize: 12, color: ACCENT, width: 22, textAlign: "right", fontWeight: 700 },}, cnt)
+                      , React.createElement('span', { style: { fontSize: 11, color: MUTED, width: 34 },}, pct(cnt, stats.total), "%")
                     )
-                    , React.createElement('span', { style: { fontSize: 12, color: ACCENT, width: 22, textAlign: "right", fontWeight: 700 },}, cnt)
-                    , React.createElement('span', { style: { fontSize: 11, color: MUTED, width: 34 },}, pct(cnt, stats.total), "%")
+                    , cnt > 0 ? (
+                      React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 8, paddingLeft: 44 },}
+                        , React.createElement('span', { style: { fontSize: 11, fontWeight: 800, color: P1C, minWidth: 64, whiteSpace: "nowrap" },}, w.p1 + " (" + a + "%)")
+                        , React.createElement('div', { style: { flex: 1, display: "flex", height: 10, borderRadius: 5, overflow: "hidden", background: "#1e3a5f" },}
+                          , React.createElement('div', { style: { width: a + "%", background: P1C },} )
+                          , React.createElement('div', { style: { width: b + "%", background: P2C },} )
+                        )
+                        , React.createElement('span', { style: { fontSize: 11, fontWeight: 800, color: P2C, minWidth: 64, textAlign: "right", whiteSpace: "nowrap" },}, w.p2 + " (" + b + "%)")
+                      )
+                    ) : null
                   )
                 );
               })
@@ -3467,1040 +3656,6 @@ function StatsScreen({ points, setup, score, matchTime }) {
     )
   );
 }
-
-// ─── AUDIO STORAGE (IndexedDB) ────────────────────────────────────────────────
-// Stores match recordings locally for review before Whisper upload
-const AudioStorage = {
-  _db: null,
-  _dbName: "tennistag_audio",
-  _storeName: "recordings",
-
-  init: function() {
-    return new Promise((resolve, reject) => {
-      if (this._db) return resolve(this._db);
-      if (!window.indexedDB) return reject(new Error("IndexedDB not supported"));
-      const req = indexedDB.open(this._dbName, 1);
-      req.onerror = () => reject(req.error);
-      req.onupgradeneeded = (e) => {
-        const db = e.target.result;
-        if (!db.objectStoreNames.contains(this._storeName)) {
-          db.createObjectStore(this._storeName, { keyPath: "id" });
-        }
-      };
-      req.onsuccess = () => { this._db = req.result; resolve(this._db); };
-    });
-  },
-
-  save: async function(recording) {
-    await this.init();
-    return new Promise((resolve, reject) => {
-      const tx = this._db.transaction(this._storeName, "readwrite");
-      const store = tx.objectStore(this._storeName);
-      const req = store.put(recording);
-      req.onsuccess = () => resolve(recording.id);
-      req.onerror = () => reject(req.error);
-    });
-  },
-
-  list: async function() {
-    await this.init();
-    return new Promise((resolve, reject) => {
-      const tx = this._db.transaction(this._storeName, "readonly");
-      const store = tx.objectStore(this._storeName);
-      const req = store.getAll();
-      req.onsuccess = () => {
-        // Return metadata only (no blobs) — sorted newest first
-        const list = req.result.map(r => ({
-          id: r.id, name: r.name, duration: r.duration,
-          markers: r.markers || [], savedAt: r.savedAt, size: r.blob ? r.blob.size : 0,
-        })).sort((a, b) => b.savedAt - a.savedAt);
-        resolve(list);
-      };
-      req.onerror = () => reject(req.error);
-    });
-  },
-
-  get: async function(id) {
-    await this.init();
-    return new Promise((resolve, reject) => {
-      const tx = this._db.transaction(this._storeName, "readonly");
-      const req = tx.objectStore(this._storeName).get(id);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
-  },
-
-  delete: async function(id) {
-    await this.init();
-    return new Promise((resolve, reject) => {
-      const tx = this._db.transaction(this._storeName, "readwrite");
-      const req = tx.objectStore(this._storeName).delete(id);
-      req.onsuccess = () => resolve(true);
-      req.onerror = () => reject(req.error);
-    });
-  },
-};
-
-// ─── AUDIO RECORDER ENGINE ────────────────────────────────────────────────────
-const AudioRecorder = {
-  _mediaRecorder: null,
-  _chunks: [],
-  _stream: null,
-  _startTime: 0,
-  _pausedDuration: 0,
-  _pausedAt: 0,
-  _markers: [],
-  _analyser: null,
-  _audioCtx: null,
-
-  isSupported: function() {
-    return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
-  },
-
-  start: async function(onStatus) {
-    if (!this.isSupported()) { onStatus && onStatus("unsupported"); return false; }
-    try {
-      this._stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 44100 }
-      });
-      // Set up analyser for waveform
-      this._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const source = this._audioCtx.createMediaStreamSource(this._stream);
-      this._analyser = this._audioCtx.createAnalyser();
-      this._analyser.fftSize = 256;
-      source.connect(this._analyser);
-      // Pick best supported format
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus"
-        : MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : "audio/webm";
-      this._mediaRecorder = new MediaRecorder(this._stream, { mimeType: mimeType, audioBitsPerSecond: 64000 });
-      this._chunks = [];
-      this._markers = [];
-      this._pausedDuration = 0;
-      this._pausedAt = 0;
-      this._mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) this._chunks.push(e.data); };
-      this._mediaRecorder.start(1000); // collect 1-sec chunks
-      this._startTime = Date.now();
-      onStatus && onStatus("recording");
-      return true;
-    } catch(e) {
-      console.error("Audio start failed:", e);
-      onStatus && onStatus(e.name === "NotAllowedError" ? "denied" : "error");
-      return false;
-    }
-  },
-
-  pause: function() {
-    if (this._mediaRecorder && this._mediaRecorder.state === "recording") {
-      this._mediaRecorder.pause();
-      this._pausedAt = Date.now();
-    }
-  },
-
-  resume: function() {
-    if (this._mediaRecorder && this._mediaRecorder.state === "paused") {
-      this._mediaRecorder.resume();
-      if (this._pausedAt) { this._pausedDuration += Date.now() - this._pausedAt; this._pausedAt = 0; }
-    }
-  },
-
-  addMarker: function(label) {
-    const elapsed = this.getElapsed();
-    const marker = { t: elapsed, label: label || "Point " + (this._markers.length + 1), ts: Date.now() };
-    this._markers.push(marker);
-    return marker;
-  },
-
-  getMarkers: function() { return [...this._markers]; },
-
-  getElapsed: function() {
-    if (!this._startTime) return 0;
-    const now = this._pausedAt || Date.now();
-    return (now - this._startTime - this._pausedDuration) / 1000;
-  },
-
-  getLevel: function() {
-    if (!this._analyser) return 0;
-    const data = new Uint8Array(this._analyser.frequencyBinCount);
-    this._analyser.getByteFrequencyData(data);
-    let sum = 0;
-    for (let i = 0; i < data.length; i++) sum += data[i];
-    return sum / data.length / 255;
-  },
-
-  stop: function() {
-    return new Promise((resolve) => {
-      if (!this._mediaRecorder) return resolve(null);
-      const duration = this.getElapsed();
-      const markers = [...this._markers];
-      this._mediaRecorder.onstop = async () => {
-        const blob = new Blob(this._chunks, { type: this._mediaRecorder.mimeType });
-        // Stop stream
-        this._stream.getTracks().forEach(t => t.stop());
-        if (this._audioCtx) { try { this._audioCtx.close(); } catch(e) {} }
-        this._stream = null; this._mediaRecorder = null; this._chunks = []; this._analyser = null;
-        resolve({ blob: blob, duration: duration, markers: markers, mimeType: blob.type });
-      };
-      this._mediaRecorder.stop();
-    });
-  },
-
-  isRecording: function() { return !!this._mediaRecorder && this._mediaRecorder.state !== "inactive"; },
-  isPaused: function() { return !!this._mediaRecorder && this._mediaRecorder.state === "paused"; },
-};
-
-// ─── MATCH AUDIO RECORDER UI ──────────────────────────────────────────────────
-function MatchAudioRecorder({ onClose, T = THEMES.original }) {
-  const [status, setStatus] = useState("idle"); // idle|recording|paused|saving|done
-  const [elapsed, setElapsed] = useState(0);
-  const [level, setLevel] = useState(0);
-  const [markers, setMarkers] = useState([]);
-  const [error, setError] = useState(null);
-  const [matchName, setMatchName] = useState("");
-  const levelIntervalRef = useRef(null);
-  const timerIntervalRef = useRef(null);
-
-  useEffect(() => {
-    return () => {
-      if (levelIntervalRef.current) clearInterval(levelIntervalRef.current);
-      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-      if (AudioRecorder.isRecording()) AudioRecorder.stop();
-    };
-  }, []);
-
-  const fmtTime = (s) => {
-    const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = Math.floor(s%60);
-    return (h > 0 ? h + ":" : "") + String(m).padStart(2,"0") + ":" + String(sec).padStart(2,"0");
-  };
-
-  const handleStart = async () => {
-    setError(null);
-    const ok = await AudioRecorder.start((st) => {
-      if (st === "denied") setError("Microphone access denied. Enable in browser settings.");
-      else if (st === "unsupported") setError("Audio recording not supported in this browser.");
-      else if (st === "error") setError("Could not start recording.");
-    });
-    if (ok) {
-      setStatus("recording");
-      timerIntervalRef.current = setInterval(() => setElapsed(AudioRecorder.getElapsed()), 500);
-      levelIntervalRef.current = setInterval(() => setLevel(AudioRecorder.getLevel()), 100);
-    }
-  };
-
-  const handlePauseResume = () => {
-    if (status === "recording") { AudioRecorder.pause(); setStatus("paused"); }
-    else if (status === "paused") { AudioRecorder.resume(); setStatus("recording"); }
-  };
-
-  const handleMark = () => {
-    if (status !== "recording") return;
-    const m = AudioRecorder.addMarker();
-    setMarkers(AudioRecorder.getMarkers());
-    if (navigator.vibrate) navigator.vibrate(50);
-  };
-
-  const handleStop = async () => {
-    setStatus("saving");
-    if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-    if (levelIntervalRef.current) clearInterval(levelIntervalRef.current);
-    const result = await AudioRecorder.stop();
-    if (!result) { setError("Recording failed"); setStatus("idle"); return; }
-    const id = "rec_" + Date.now();
-    const name = matchName || ("Match " + new Date().toLocaleString());
-    try {
-      await AudioStorage.save({
-        id: id, name: name, blob: result.blob, duration: result.duration,
-        markers: result.markers, mimeType: result.mimeType, savedAt: Date.now(),
-      });
-      // Also trigger download
-      const url = URL.createObjectURL(result.blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = name.replace(/[^a-zA-Z0-9]/g, "_") + (result.mimeType.includes("mp4") ? ".m4a" : ".webm");
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setStatus("done");
-    } catch(e) {
-      setError("Save failed: " + e.message);
-      setStatus("idle");
-    }
-  };
-
-  const isRec = status === "recording";
-  const isPaused = status === "paused";
-  const active = isRec || isPaused;
-
-  return React.createElement('div', { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },}
-    , React.createElement('div', { style: { background: T.card, borderRadius: 16, padding: 28, maxWidth: 500, width: "100%", border: "2px solid " + T.accent, boxShadow: "0 20px 60px rgba(0,0,0,0.8)" },}
-      , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 },}
-        , React.createElement('div', { style: { fontSize: 20, fontWeight: 900, color: T.text, fontFamily: T.fontDisplay },}, "🎙️ Match Audio Recorder")
-        , React.createElement('button', { onClick: () => { if (active) { if (!confirm("Stop and discard recording?")) return; AudioRecorder.stop(); } onClose(); }, style: { background: "transparent", border: "1px solid " + T.border, color: T.textMuted, borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 14 },}, "✕")
-      )
-      , !active && status !== "done" && React.createElement('input', { placeholder: "Match name (optional)", value: matchName, onChange: e => setMatchName(e.target.value), style: { width: "100%", padding: "10px 12px", borderRadius: 8, border: "2px solid " + T.border, background: T.bgDeep, color: T.text, fontSize: 14, marginBottom: 16, boxSizing: "border-box" },})
-      , error && React.createElement('div', { style: { padding: "8px 12px", background: DANGER + "15", border: "1px solid " + DANGER, borderRadius: 6, color: DANGER, fontSize: 12, marginBottom: 12 },}, "⚠ " + error)
-      /* Timer & level display */
-      , React.createElement('div', { style: { textAlign: "center", padding: "24px 0", background: T.bgDeep, borderRadius: 12, marginBottom: 16, border: "1px solid " + T.border },}
-        , React.createElement('div', { style: { fontSize: 48, fontWeight: 900, color: isRec ? "#52c41a" : (isPaused ? "#f4d35e" : T.textMuted), fontFamily: "monospace", letterSpacing: 2 },}, fmtTime(elapsed))
-        , React.createElement('div', { style: { fontSize: 11, color: T.textMuted, marginTop: 4, letterSpacing: 2, textTransform: "uppercase" },}, status === "idle" ? "Ready to record" : status === "recording" ? "● Recording" : status === "paused" ? "⏸ Paused" : status === "saving" ? "Saving..." : "✓ Saved & Downloaded")
-        /* Audio level meter */
-        , active && React.createElement('div', { style: { height: 8, background: T.border, borderRadius: 4, margin: "12px 30px 0", overflow: "hidden" },}
-          , React.createElement('div', { style: { height: "100%", width: (level * 100) + "%", background: "linear-gradient(90deg,#52c41a,#f4d35e,#e63946)", transition: "width 0.1s" },})
-        )
-      )
-      /* Markers list */
-      , markers.length > 0 && React.createElement('div', { style: { maxHeight: 100, overflowY: "auto", marginBottom: 12, padding: "8px 12px", background: T.bgDeep, borderRadius: 8, border: "1px solid " + T.border },}
-        , React.createElement('div', { style: { fontSize: 10, color: T.textMuted, fontWeight: 700, letterSpacing: 1, marginBottom: 4 },}, markers.length + " MARKERS")
-        , markers.slice(-5).reverse().map((m, i) => React.createElement('div', { key: i, style: { fontSize: 11, color: T.text, padding: "2px 0" },}, "● " + fmtTime(m.t) + " — " + m.label))
-      )
-      /* Controls */
-      , React.createElement('div', { style: { display: "flex", gap: 10 },}
-        , status === "idle" && React.createElement('button', { onClick: handleStart, style: { flex: 1, padding: "16px 0", borderRadius: 12, fontSize: 16, fontWeight: 800, cursor: "pointer", border: "none", background: "#e63946", color: WHITE },}, "● START RECORDING")
-        , active && React.createElement('button', { onClick: handleMark, disabled: !isRec, style: { flex: 2, padding: "20px 0", borderRadius: 12, fontSize: 18, fontWeight: 900, cursor: isRec ? "pointer" : "not-allowed", border: "3px solid " + T.accent, background: T.accent + "35", color: T.accent, opacity: isRec ? 1 : 0.4, letterSpacing: 1 },}, "● MARK POINT (" + markers.length + ")")
-        , active && React.createElement('button', { onClick: handlePauseResume, style: { flex: 1, padding: "14px 0", borderRadius: 10, fontSize: 14, fontWeight: 800, cursor: "pointer", border: "2px solid #f4d35e", background: "#f4d35e25", color: "#f4d35e" },}, isPaused ? "▶ RESUME" : "⏸ PAUSE")
-        , active && React.createElement('button', { onClick: handleStop, style: { flex: 1, padding: "14px 0", borderRadius: 10, fontSize: 14, fontWeight: 800, cursor: "pointer", border: "2px solid #52c41a", background: "#52c41a25", color: "#52c41a" },}, "■ STOP & SAVE")
-        , status === "done" && React.createElement('button', { onClick: onClose, style: { flex: 1, padding: "14px 0", borderRadius: 10, fontSize: 14, fontWeight: 800, cursor: "pointer", border: "2px solid " + T.accent, background: T.accent + "25", color: T.accent },}, "✓ DONE")
-      )
-      , React.createElement('div', { style: { marginTop: 14, fontSize: 10, color: T.textMuted, textAlign: "center", lineHeight: 1.5 },}, "💾 Auto-saves to browser + downloads to iPad. Markers help AI parse points later.")
-    )
-  );
-}
-
-
-
-
-// ─── WHISPER API CLIENT ───────────────────────────────────────────────────────
-const WhisperClient = {
-  API_URL: "https://api.openai.com/v1/audio/transcriptions",
-
-  getKey: function() { try { return localStorage.getItem("tennistag_openai_key") || ""; } catch(e) { return ""; } },
-  setKey: function(k) { try { localStorage.setItem("tennistag_openai_key", k); } catch(e) {} },
-  hasKey: function() { return !!this.getKey(); },
-
-  transcribe: async function(blob, prompt, onProgress) {
-    const key = this.getKey();
-    if (!key) throw new Error("No OpenAI API key configured. Open Settings to add one.");
-    if (!blob) throw new Error("No audio blob provided");
-
-    const fd = new FormData();
-    fd.append("file", blob, "match.webm");
-    fd.append("model", "whisper-1");
-    fd.append("response_format", "verbose_json");
-    fd.append("timestamp_granularities[]", "word");
-    if (prompt) fd.append("prompt", prompt);
-    fd.append("language", "en");
-
-    onProgress && onProgress({ stage: "uploading", percent: 0 });
-
-    try {
-      const res = await fetch(this.API_URL, {
-        method: "POST",
-        headers: { "Authorization": "Bearer " + key },
-        body: fd,
-      });
-      onProgress && onProgress({ stage: "processing", percent: 50 });
-      if (!res.ok) {
-        const err = await res.text();
-        throw new Error("Whisper API error " + res.status + ": " + err.slice(0, 200));
-      }
-      const data = await res.json();
-      onProgress && onProgress({ stage: "done", percent: 100 });
-      return data; // { text, words: [{word, start, end}], segments, language, duration }
-    } catch(e) {
-      onProgress && onProgress({ stage: "error", error: e.message });
-      throw e;
-    }
-  },
-};
-
-// ─── TENNIS VOCABULARY PARSER ─────────────────────────────────────────────────
-// Embedded vocabulary — same structure as tennis_vocabulary.json
-// ─── TENNIS VOCABULARY v2.0 ──────────────────────────────────────────────────
-// Built from analysis of 3 real match transcripts (~155 min, 6,457 words)
-const TENNIS_VOCAB = {
-  // Phonetic aliases applied as text replacements BEFORE category matching
-  _phonetic_aliases: {
-    "younis": ["yunus","yunis","younes","yoonis","unis","unus","unit","yoonus","yoneis","yunes"],
-    "rallies": ["rylands","rylanns","ryland","raylands"],
-    "rally length 9-12": ["rally length 1-12","rally length 1 12"],
-  },
-  _players_pre_seeded: {
-    "Younis": ["younis","yunus","yunis","younes","unus","unis","unit","yoonis","yoneis"]
-  },
-  serve_type: {
-    first_serve: { synonyms: ["first serve","1st serve"], tags: { serveType: "1st Serve" }},
-    second_serve: { synonyms: ["second serve","2nd serve"], tags: { serveType: "2nd Serve" }},
-  },
-  serve_zone: {
-    wide: { synonyms: ["wide serve","first serve wide","second serve wide","wide","out wide","served wide"], tags: { serveZone: "Wide" }},
-    body: { synonyms: ["middle serve","first serve middle","second serve middle","middle","body serve","body","into the body","jam serve","jammed"], tags: { serveZone: "Body" }},
-    t: { synonyms: ["down the tee","down the t","tee serve","t serve","up the tee","first serve tee","second serve tee","tee"], tags: { serveZone: "T" }},
-  },
-  serve_spin: {
-    flat: { synonyms: ["flat serve","flat"], tags: { serveSpin: "Flat" }},
-    slice: { synonyms: ["slice serve","sliced serve","slice","sliced"], tags: { serveSpin: "Slice" }},
-    kick: { synonyms: ["kick serve","kicker","topspin serve","kick"], tags: { serveSpin: "Kick" }},
-  },
-  serve_fault: {
-    fault_net: { synonyms: ["fault net","first serve fault net","fault into the net"], tags: { serveFault: "Net" }},
-    fault_long: { synonyms: ["fault long","first serve fault long","served long fault"], tags: { serveFault: "Long" }},
-    fault_wide: { synonyms: ["fault wide","first serve fault wide"], tags: { serveFault: "Wide" }},
-    foot_fault: { synonyms: ["foot fault","foot faulted"], tags: { serveFault: "Foot Fault" }},
-  },
-  outcomes: {
-    ace: { synonyms: ["ace","aced","ace serve"], tags: { outcome: "Ace", rallyLength: "0-4" }, auto: "server" },
-    double_fault: { synonyms: ["double fault","double faulted","double fault in"], tags: { outcome: "Double Fault", rallyLength: "0-4" }, auto: "returner" },
-    return_error: { synonyms: ["return error","return into the net","return at the net","return long","return wide"], tags: { outcome: "Return Error", rallyLength: "0-4" }, auto: "server" },
-    return_winner: { synonyms: ["return winner","winning return"], tags: { outcome: "Return Winner", rallyLength: "0-4" }, auto: "returner" },
-    winner: { synonyms: ["winner from","winner was","winner by","clean winner","winning shot","winner"], tags: { outcome: "Winner" }},
-    forced_error: { synonyms: ["forced error on","forced error","fe"], tags: { outcome: "Forced Error" }},
-    unforced_error: { synonyms: ["unforced error","unforced","ue"], tags: { outcome: "Unforced Error" }},
-    error_generic: { synonyms: ["error from","error on","error was","error in the net","error long","error wide","error"], tags: { outcome: "Unforced Error" }},
-    let_call: { synonyms: ["let","let serve"], tags: { outcome: "Let" }, reset: true },
-  },
-  shot_types: {
-    fh_volley: { synonyms: ["forehand volley","fh volley"], tags: { shotType: "Volley Forehand" }},
-    bh_volley: { synonyms: ["backhand volley","bh volley"], tags: { shotType: "Volley Backhand" }},
-    slice_fh: { synonyms: ["slice forehand","forehand slice"], tags: { shotType: "Slice Forehand" }},
-    slice_bh: { synonyms: ["slice backhand","backhand slice","sliced backhand"], tags: { shotType: "Slice Backhand" }},
-    approach_fh: { synonyms: ["forehand approach","approach forehand"], tags: { shotType: "Approach Forehand" }},
-    approach_bh: { synonyms: ["backhand approach","approach backhand"], tags: { shotType: "Approach Backhand" }},
-    drop_shot: { synonyms: ["drop shot","dropper","drop volley"], tags: { shotType: "Drop Shot" }},
-    lob: { synonyms: ["lob","lobbed"], tags: { shotType: "Lob" }},
-    overhead: { synonyms: ["overhead","smash"], tags: { shotType: "Overhead" }},
-    half_volley: { synonyms: ["half volley","half-volley"], tags: { shotType: "Half Volley" }},
-    forehand: { synonyms: ["forehand","fh"], tags: { shotType: "Forehand" }, contextual: true },
-    backhand: { synonyms: ["backhand","bh"], tags: { shotType: "Backhand" }, contextual: true },
-    volley: { synonyms: ["volley","volleyed"], tags: { shotType: "Volley" }, contextual: true },
-  },
-  return_hand: {
-    return_fh: { synonyms: ["return forehand","forehand return","fh return"], tags: { returnHand: "Forehand" }},
-    return_bh: { synonyms: ["return backhand","backhand return","bh return"], tags: { returnHand: "Backhand" }},
-  },
-  return_position: {
-    behind: { synonyms: ["behind the baseline","behind baseline","from behind the baseline"], tags: { returnPosition: "Behind Baseline" }},
-    on: { synonyms: ["on the baseline","on baseline"], tags: { returnPosition: "On Baseline" }},
-    inside: { synonyms: ["inside the baseline","inside baseline","stepped inside","from inside the baseline"], tags: { returnPosition: "Inside Baseline" }},
-  },
-  shot_direction: {
-    cross: { synonyms: ["cross court","crosscourt","cross-court","by a cross court"], tags: { direction: "Cross-Court" }},
-    dtl: { synonyms: ["down the line","dtl"], tags: { direction: "Down-the-Line" }},
-    inside_out: { synonyms: ["inside out"], tags: { direction: "Inside-Out" }},
-    inside_in: { synonyms: ["inside in"], tags: { direction: "Inside-In" }},
-  },
-  error_direction: {
-    net: { synonyms: ["into the net","in the net","net error","netted","at the net error","error at the net","error in the net"], tags: { errorDirection: "Net" }},
-    long: { synonyms: ["return long","long error","way long","over the baseline","long from"], tags: { errorDirection: "Long" }},
-    wide: { synonyms: ["return wide","wide error","way wide","missed wide","wide from"], tags: { errorDirection: "Wide" }},
-  },
-  rally_length: {
-    r04: { synonyms: ["rally length 0-4","short rally"], tags: { rallyLength: "0-4" }},
-    r58: { synonyms: ["rally length 5-8","medium rally"], tags: { rallyLength: "5-8" }},
-    r912: { synonyms: ["rally length 9-12","rally length 1-12","long rally"], tags: { rallyLength: "9-12" }},
-    r13: { synonyms: ["rally length 13+","rally length 13 plus","13 plus","very long rally","marathon rally"], tags: { rallyLength: "13+" }},
-  },
-  net_approach: {
-    both: { synonyms: ["both at the net","both at net","net approach from both players"], tags: { netApproach: "both" }},
-    generic: { synonyms: ["net approach","approached the net","came to net","at the net"], tags: { netApproach: "?" }},
-    sv: { synonyms: ["serve and volley","serve volley"], tags: { netApproach: "server" }},
-  },
-  sequencing: {
-    s1: { synonyms: ["serve plus one","serve+1","from the serve plus one"], tags: { shotContext: "serve+1" }},
-    r1: { synonyms: ["return plus one","return+1","from the return plus one"], tags: { shotContext: "return+1" }},
-  },
-  game_set: {
-    leads: { synonyms: ["leads","leading","is leading"], tags: { gameLead: true }},
-    game_to: { synonyms: ["game goes to","game to","point goes to"], tags: { gameMarker: true }},
-    first_set: { synonyms: ["first set","1st set"], tags: { setMarker: 1 }},
-    second_set: { synonyms: ["second set","2nd set"], tags: { setMarker: 2 }},
-    third_set: { synonyms: ["third set","3rd set"], tags: { setMarker: 3 }},
-  },
-  score_correction: {
-    correct: { synonyms: ["score is now","score now is","score is","current score","correction score"], tags: { scoreCorrection: true }},
-  },
-};
-
-const TennisVocabParser = {
-  WHISPER_PROMPT: "Tennis match tagging by Younis. Players: Younis. Common terms: ace, fault, double fault, first serve, second serve, forehand, backhand, volley, slice, kick serve, flat, wide, body, middle, tee, down the tee, down the line, cross court, unforced error, forced error, winner, return forehand, return backhand, behind the baseline, on the baseline, inside the baseline, serve plus one, return plus one, approach shot, drop shot, lob, overhead, rally length 0-4, rally length 5-8, rally length 9-12, rally length 13+, deuce, advantage, love 15, 30 15, 40 15, break point, net approach, at the net, both at the net, score is, leads, first game, second game, first set, second set, game goes to.",
-
-  // Apply phonetic aliases — replace mistranscriptions globally
-  _normalize: function(text) {
-    let t = " " + text.toLowerCase() + " ";
-    const aliases = TENNIS_VOCAB._phonetic_aliases;
-    Object.keys(aliases).forEach(canonical => {
-      aliases[canonical].forEach(variant => {
-        const re = new RegExp("\\b" + variant.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "gi");
-        t = t.replace(re, canonical);
-      });
-    });
-    return t.trim();
-  },
-
-  parse: function(transcript, markers, opponentName) {
-    if (!transcript || !transcript.text) return { points: [], rawText: "" };
-    const rawText = transcript.text;
-    const words = transcript.words || [];
-
-    // Normalize the full text
-    const normalizedText = this._normalize(rawText);
-    // Build per-player alias list (Younis pre-seeded + opponent if provided)
-    const playerAliases = { Younis: TENNIS_VOCAB._players_pre_seeded.Younis };
-    if (opponentName) playerAliases[opponentName] = [opponentName.toLowerCase()];
-
-    // Step 1: Layered segmentation into utterances
-    const segments = this._segment(words, markers || []);
-
-    // Step 2: For each segment, extract tags
-    const points = segments.map((seg, i) => {
-      const segText = this._normalize(seg.words.map(w => w.word).join(" "));
-      const tags = this._extractTags(segText);
-      const winner = this._extractWinner(segText, playerAliases, tags);
-      // Auto-fill rally length default
-      if (!tags.rallyLength && tags.outcome) tags.rallyLength = "0-4";
-      return {
-        id: "p" + (i + 1),
-        pointNum: i + 1,
-        startTime: seg.start, endTime: seg.end,
-        text: seg.words.map(w => w.word).join(" "),
-        normalizedText: segText,
-        tags: tags,
-        pointWinner: winner,
-        confidence: this._confidence(tags),
-        approved: false,
-      };
-    }).filter(p => Object.keys(p.tags).filter(k => !k.startsWith("_")).length > 0);
-
-    return { points: points, rawText: rawText, words: words };
-  },
-
-  _segment: function(words, markers) {
-    if (!words.length) return [];
-    // PRIMARY: marker-based segmentation (user taps MARK after every point)
-    if (markers && markers.length > 0) {
-      return this._segmentByMarkers(words, markers);
-    }
-    // FALLBACK: split on "first serve" / "second serve" only
-    // (for legacy recordings without markers — score-aware but not outcome-based)
-    return this._segmentByServeAnnouncements(words);
-  },
-
-  _segmentByMarkers: function(words, markers) {
-    // Each marker defines the END of a point. Words between markers = one point.
-    const segs = [];
-    const sorted = [...markers].sort((a,b) => a.t - b.t);
-    let prev = 0;
-    sorted.forEach(m => {
-      const sw = words.filter(w => w.start >= prev && w.start <= m.t);
-      if (sw.length) segs.push({ start: sw[0].start, end: sw[sw.length-1].end, words: sw });
-      prev = m.t;
-    });
-    // Any words after the last marker = final point
-    const fw = words.filter(w => w.start > prev);
-    if (fw.length) segs.push({ start: fw[0].start, end: fw[fw.length-1].end, words: fw });
-    return segs;
-  },
-
-  _segmentByServeAnnouncements: function(words) {
-    // Fallback for unmarked recordings: split at each "first serve" or "second serve"
-    // announcement that comes AFTER a gap (so consecutive "first serve fault second serve"
-    // stays as one point). Score callouts also split.
-    const segs = []; let cur = [];
-    const scoreKws = ["love","all","deuce"];
-    for (let i = 0; i < words.length; i++) {
-      const w = words[i];
-      const wText = w.word.toLowerCase().replace(/[.,!?]/g,"");
-      const nextText = words[i+1] ? words[i+1].word.toLowerCase().replace(/[.,!?]/g,"") : "";
-      const combo = wText + " " + nextText;
-      // Detect "first serve" at the start of a new point (after score callout OR gap)
-      const isNewServe = (combo === "first serve" || combo === "second serve");
-      const gap = words[i+1] ? (words[i+1].start - w.end) : 0;
-      const afterScore = scoreKws.some(k => wText.includes(k));
-      // Split BEFORE a new serve announcement, after a score/game marker, or after a 3s+ gap
-      if ((isNewServe && cur.length > 0 && (gap > 0.5 || afterScore)) || afterScore || gap > 3) {
-        if (cur.length) {
-          segs.push({ start: cur[0].start, end: cur[cur.length-1].end, words: [...cur] });
-          cur = [];
-        }
-      }
-      cur.push(w);
-    }
-    if (cur.length) segs.push({ start: cur[0].start, end: cur[cur.length-1].end, words: cur });
-    return segs;
-  },
-
-  _extractTags: function(text) {
-    const tags = {};
-    Object.keys(TENNIS_VOCAB).forEach(catKey => {
-      if (catKey.startsWith("_")) return;
-      const cat = TENNIS_VOCAB[catKey];
-      let bestMatch = null; let bestLen = 0;
-      Object.keys(cat).forEach(termKey => {
-        const term = cat[termKey];
-        if (!term.synonyms) return;
-        term.synonyms.forEach(syn => {
-          if (text.includes(syn) && syn.length > bestLen) {
-            bestMatch = term; bestLen = syn.length;
-          }
-        });
-      });
-      if (bestMatch && bestMatch.tags) {
-        Object.assign(tags, bestMatch.tags);
-        if (bestMatch.auto) tags._autoWinner = bestMatch.auto;
-      }
-    });
-    return tags;
-  },
-
-  _extractWinner: function(text, playerAliases, tags) {
-    // Look for "from X", "by X", "X leads" patterns
-    const lower = text.toLowerCase();
-    let foundPlayer = null;
-    Object.keys(playerAliases).forEach(canonical => {
-      playerAliases[canonical].forEach(alias => {
-        const patterns = [`from ${alias}`, `by ${alias}`, `${alias} leads`, `point goes to ${alias}`, `game goes to ${alias}`];
-        if (patterns.some(p => lower.includes(p))) foundPlayer = canonical;
-      });
-    });
-    return foundPlayer;
-  },
-
-  _confidence: function(tags) {
-    const count = Object.keys(tags).filter(k => !k.startsWith("_")).length;
-    if (count >= 4) return "high";
-    if (count >= 2) return "medium";
-    return "low";
-  },
-};
-
-// ─── SETTINGS MODAL (API key) ─────────────────────────────────────────────────
-function SettingsModal({ onClose, T = THEMES.original }) {
-  const [key, setKey] = useState(WhisperClient.getKey());
-  const [showKey, setShowKey] = useState(false);
-  const [saved, setSaved] = useState(false);
-
-  const handleSave = () => {
-    WhisperClient.setKey(key.trim());
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-  };
-
-  return React.createElement('div', { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },}
-    , React.createElement('div', { style: { background: T.card, borderRadius: 16, padding: 28, maxWidth: 500, width: "100%", border: "2px solid " + T.accent },}
-      , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },}
-        , React.createElement('div', { style: { fontSize: 20, fontWeight: 900, color: T.text },}, "⚙️ Settings")
-        , React.createElement('button', { onClick: onClose, style: { background: "transparent", border: "1px solid " + T.border, color: T.textMuted, borderRadius: 6, padding: "4px 10px", cursor: "pointer" },}, "✕")
-      )
-      , React.createElement('div', { style: { fontSize: 12, color: T.textMuted, marginBottom: 12 },}, "OpenAI API key for Whisper transcription. Stored only in your browser — never sent anywhere except directly to OpenAI.")
-      , React.createElement('label', { style: { fontSize: 11, color: T.textMuted, fontWeight: 700, letterSpacing: 1, marginBottom: 4, display: "block" },}, "OPENAI API KEY")
-      , React.createElement('div', { style: { display: "flex", gap: 8, marginBottom: 6 },}
-        , React.createElement('input', { type: showKey ? "text" : "password", placeholder: "sk-proj-...", value: key, onChange: e => setKey(e.target.value), style: { flex: 1, padding: "10px 12px", borderRadius: 8, border: "2px solid " + T.border, background: T.bgDeep, color: T.text, fontSize: 13, fontFamily: "monospace", boxSizing: "border-box" },})
-        , React.createElement('button', { onClick: () => setShowKey(!showKey), style: { padding: "0 12px", borderRadius: 8, border: "1px solid " + T.border, background: T.card2, color: T.textMuted, cursor: "pointer", fontSize: 14 },}, showKey ? "🙈" : "👁")
-      )
-      , React.createElement('div', { style: { fontSize: 10, color: T.textMuted, marginBottom: 16 },}, "Get your key at platform.openai.com/api-keys · Cost: ~$0.006/min audio")
-      , React.createElement('button', { onClick: handleSave, style: { width: "100%", padding: "12px 0", borderRadius: 10, fontSize: 14, fontWeight: 800, cursor: "pointer", border: "2px solid " + T.accent, background: T.accent + "25", color: T.accent },}, saved ? "✓ Saved" : "💾 Save Key")
-      , key && React.createElement('div', { style: { fontSize: 11, color: "#52c41a", marginTop: 10, textAlign: "center" },}, "✓ Key configured (" + key.slice(0, 8) + "..." + key.slice(-4) + ")")
-    )
-  );
-}
-
-// ─── RECORDINGS LIBRARY MODAL ─────────────────────────────────────────────────
-function RecordingsLibraryModal({ onClose, onTranscribe, T = THEMES.original }) {
-  const [recordings, setRecordings] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [playingId, setPlayingId] = useState(null);
-  const [audioUrl, setAudioUrl] = useState(null);
-  const audioRef = useRef(null);
-
-  const load = () => {
-    setLoading(true);
-    AudioStorage.list().then(list => { setRecordings(list); setLoading(false); }).catch(e => { setLoading(false); });
-  };
-  useEffect(() => { load(); return () => { if (audioUrl) URL.revokeObjectURL(audioUrl); }; }, []);
-
-  const fmtTime = (s) => { const m = Math.floor(s/60), sec = Math.floor(s%60); return m + ":" + String(sec).padStart(2,"0"); };
-  const fmtSize = (b) => b > 1048576 ? (b/1048576).toFixed(1) + " MB" : (b/1024).toFixed(0) + " KB";
-  const fmtDate = (ts) => new Date(ts).toLocaleString();
-
-  const handlePlay = async (rec) => {
-    if (playingId === rec.id) {
-      if (audioRef.current) audioRef.current.pause();
-      setPlayingId(null);
-      return;
-    }
-    const full = await AudioStorage.get(rec.id);
-    if (full && full.blob) {
-      if (audioUrl) URL.revokeObjectURL(audioUrl);
-      const url = URL.createObjectURL(full.blob);
-      setAudioUrl(url);
-      setPlayingId(rec.id);
-      setTimeout(() => { if (audioRef.current) { audioRef.current.src = url; audioRef.current.play(); } }, 100);
-    }
-  };
-
-  const handleDelete = async (id) => {
-    if (!confirm("Delete this recording permanently?")) return;
-    await AudioStorage.delete(id);
-    load();
-  };
-
-  // Import existing audio file from disk into IndexedDB
-  const fileInputRef = useRef(null);
-  const handleImport = () => { if (fileInputRef.current) fileInputRef.current.click(); };
-  const handleFileSelected = async (e) => {
-    const file = e.target.files && e.target.files[0];
-    if (!file) return;
-    try {
-      // Get audio duration via temporary <audio> element
-      const url = URL.createObjectURL(file);
-      const audio = new Audio(url);
-      await new Promise((resolve) => {
-        audio.onloadedmetadata = resolve;
-        audio.onerror = resolve;
-        setTimeout(resolve, 3000);
-      });
-      const duration = audio.duration && isFinite(audio.duration) ? audio.duration : 0;
-      URL.revokeObjectURL(url);
-      await AudioStorage.save({
-        id: "import_" + Date.now(),
-        name: file.name.replace(/\.[^.]+$/, ""),
-        blob: file,
-        duration: duration,
-        markers: [],
-        mimeType: file.type || "audio/mpeg",
-        savedAt: Date.now(),
-      });
-      e.target.value = ""; // reset input
-      load();
-    } catch(err) {
-      alert("Import failed: " + err.message);
-    }
-  };
-
-  return React.createElement('div', { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },}
-    , React.createElement('input', { ref: fileInputRef, type: "file", accept: "audio/*,.mp3,.m4a,.wav,.webm,.ogg", onChange: handleFileSelected, style: { display: "none" },})
-    , React.createElement('div', { style: { background: T.card, borderRadius: 16, padding: 24, maxWidth: 700, width: "100%", maxHeight: "85vh", display: "flex", flexDirection: "column", border: "2px solid " + T.accent },}
-      , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },}
-        , React.createElement('div', null
-          , React.createElement('div', { style: { fontSize: 18, fontWeight: 900, color: T.text },}, "🎵 Recordings Library")
-          , React.createElement('div', { style: { fontSize: 11, color: T.textMuted },}, recordings.length + " saved · Tap 🤖 to transcribe with Whisper")
-        )
-        , React.createElement('div', { style: { display: "flex", gap: 8 },}
-          , React.createElement('button', { onClick: handleImport, style: { padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 800, cursor: "pointer", border: "2px solid #5abaff", background: "#5abaff20", color: "#5abaff" },}, "📁 Import Audio")
-          , React.createElement('button', { onClick: onClose, style: { background: "transparent", border: "1px solid " + T.border, color: T.textMuted, borderRadius: 6, padding: "4px 10px", cursor: "pointer" },}, "✕")
-        )
-      )
-      , audioUrl && React.createElement('audio', { ref: audioRef, controls: true, style: { width: "100%", marginBottom: 12 },})
-      , loading ? React.createElement('div', { style: { textAlign: "center", padding: 40, color: T.textMuted },}, "Loading...")
-      : recordings.length === 0 ? React.createElement('div', { style: { textAlign: "center", padding: 40, color: T.textMuted },}, "No recordings yet. Use 🎙️ Record Audio to create one.")
-      : React.createElement('div', { style: { flex: 1, overflowY: "auto" },}
-          , recordings.map(r => React.createElement('div', { key: r.id, style: { padding: "12px 14px", borderRadius: 8, border: "1px solid " + T.border, marginBottom: 8, background: T.card2, display: "flex", alignItems: "center", gap: 10 },}
-            , React.createElement('div', { style: { flex: 1 },}
-              , React.createElement('div', { style: { fontWeight: 800, fontSize: 13, color: T.text },}, r.name)
-              , React.createElement('div', { style: { fontSize: 10, color: T.textMuted, marginTop: 3 },}, fmtTime(r.duration), " · ", fmtSize(r.size), " · ", (r.markers || []).length, " markers · ", fmtDate(r.savedAt))
-            )
-            , React.createElement('button', { onClick: () => handlePlay(r), style: { padding: "6px 12px", borderRadius: 6, border: "1px solid " + T.accent, background: playingId === r.id ? T.accent + "40" : "transparent", color: T.accent, cursor: "pointer", fontSize: 12, fontWeight: 700 },}, playingId === r.id ? "⏸" : "▶")
-            , React.createElement('button', { onClick: () => onTranscribe(r), style: { padding: "6px 12px", borderRadius: 6, border: "1.5px solid #52c41a", background: "#52c41a25", color: "#52c41a", cursor: "pointer", fontSize: 12, fontWeight: 800 },}, "🤖 Transcribe")
-            , React.createElement('button', { onClick: () => handleDelete(r.id), style: { padding: "6px 10px", borderRadius: 6, border: "1px solid " + DANGER + "60", background: "transparent", color: DANGER, cursor: "pointer", fontSize: 12 },}, "🗑")
-          ))
-        )
-    )
-  );
-}
-
-
-// ─── AUDIO MATCH SETUP FORM ──────────────────────────────────────────────────
-function AudioMatchSetupForm({ recording, parsedPoints, onConfirm, onClose, T = THEMES.original }) {
-  const [p1, setP1] = useState("Younis");
-  const [p2, setP2] = useState("");
-  const [p1utr, setP1utr] = useState("");
-  const [p2utr, setP2utr] = useState("");
-  const [p1hand, setP1hand] = useState("Right");
-  const [p2hand, setP2hand] = useState("Right");
-  const [surface, setSurface] = useState("Hard");
-  const [format, setFormat] = useState("Best of 3");
-  const [tournament, setTournament] = useState("");
-  const [date, setDate] = useState(new Date().toISOString().slice(0,10));
-  const [conditions, setConditions] = useState("");
-  const [superTie, setSuperTie] = useState(false);
-
-  const handleConfirm = () => {
-    if (!p1.trim() || !p2.trim()) { alert("Player 1 and Player 2 names are required"); return; }
-    onConfirm({
-      p1Name: p1.trim(), p2Name: p2.trim(),
-      p1utr: p1utr, p2utr: p2utr, p1hand: p1hand, p2hand: p2hand,
-      surface: surface, format: format, tournament: tournament || ("Audio Import: " + recording.name),
-      date: date, conditions: conditions, superTie: superTie,
-    });
-  };
-
-  const Input = (label, val, set, opts = {}) => React.createElement('div', { style: { marginBottom: 10 },}
-    , React.createElement('div', { style: { fontSize: 10, color: T.textMuted, fontWeight: 700, letterSpacing: 1, marginBottom: 4 },}, label)
-    , React.createElement('input', { type: opts.type || "text", placeholder: opts.ph || "", value: val, onChange: e => set(e.target.value), style: { width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid " + T.border, background: T.bgDeep, color: T.text, fontSize: 12, boxSizing: "border-box" },})
-  );
-
-  const Select = (label, val, set, options) => React.createElement('div', { style: { marginBottom: 10 },}
-    , React.createElement('div', { style: { fontSize: 10, color: T.textMuted, fontWeight: 700, letterSpacing: 1, marginBottom: 4 },}, label)
-    , React.createElement('select', { value: val, onChange: e => set(e.target.value), style: { width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid " + T.border, background: T.bgDeep, color: T.text, fontSize: 12 },}
-      , options.map(o => React.createElement('option', { key: o, value: o }, o))
-    )
-  );
-
-  return React.createElement('div', { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.95)", zIndex: 10000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },}
-    , React.createElement('div', { style: { background: T.card, borderRadius: 16, padding: 28, maxWidth: 600, width: "100%", maxHeight: "92vh", overflowY: "auto", border: "2px solid " + T.accent },}
-      , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 },}
-        , React.createElement('div', { style: { fontSize: 20, fontWeight: 900, color: T.text },}, "🎵 Import Audio Match")
-        , React.createElement('button', { onClick: onClose, style: { background: "transparent", border: "1px solid " + T.border, color: T.textMuted, borderRadius: 6, padding: "4px 10px", cursor: "pointer" },}, "✕")
-      )
-      , React.createElement('div', { style: { fontSize: 11, color: T.textMuted, marginBottom: 16 },}, parsedPoints.length + " parsed points · " + recording.name + " · Enter match details below.")
-
-      , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 },}
-        , React.createElement('div', { style: { padding: 12, border: "2px solid " + (p1.trim() ? "#40c070" : T.border), borderRadius: 10, background: T.bgDeep },}
-          , React.createElement('div', { style: { fontSize: 10, color: "#40c070", fontWeight: 700, letterSpacing: 1, marginBottom: 8 },}, "🎾 PLAYER 1 (serves first)")
-          , Input("Name *", p1, setP1, {ph: "Younis"})
-          , Input("UTR", p1utr, setP1utr, {ph: "12.5"})
-          , Select("Dominant Hand", p1hand, setP1hand, ["Right", "Left"])
-        )
-        , React.createElement('div', { style: { padding: 12, border: "2px solid " + (p2.trim() ? "#b060e8" : T.border), borderRadius: 10, background: T.bgDeep },}
-          , React.createElement('div', { style: { fontSize: 10, color: "#b060e8", fontWeight: 700, letterSpacing: 1, marginBottom: 8 },}, "🎾 PLAYER 2 (opponent)")
-          , Input("Name *", p2, setP2, {ph: "Opponent name"})
-          , Input("UTR", p2utr, setP2utr, {ph: "12.5"})
-          , Select("Dominant Hand", p2hand, setP2hand, ["Right", "Left"])
-        )
-      )
-      , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },}
-        , Select("Surface", surface, setSurface, ["Hard", "Clay", "Grass", "Carpet"])
-        , Select("Format", format, setFormat, ["Best of 3", "Best of 5", "1 Set", "Pro Set"])
-        , Input("Tournament / Event", tournament, setTournament, {ph: "Optional"})
-        , Input("Date", date, setDate, {type: "date"})
-      )
-      , Input("Conditions (weather, wind, etc.)", conditions, setConditions, {ph: "Optional"})
-
-      , React.createElement('div', { style: { display: "flex", gap: 10, marginTop: 18 },}
-        , React.createElement('button', { onClick: onClose, style: { flex: 1, padding: "12px 0", borderRadius: 10, fontSize: 13, fontWeight: 800, cursor: "pointer", border: "1px solid " + T.border, background: "transparent", color: T.textMuted },}, "Cancel")
-        , React.createElement('button', { onClick: handleConfirm, style: { flex: 2, padding: "12px 0", borderRadius: 10, fontSize: 14, fontWeight: 800, cursor: "pointer", border: "2px solid #52c41a", background: "#52c41a25", color: "#52c41a" },}, "✓ Import " + parsedPoints.length + " Points")
-      )
-    )
-  );
-}
-
-// ─── AUDIO → TENNISTAG FIELD MAPPER ─────────────────────────────────────────
-// Converts parsed audio points into TennisTag point objects compatible with
-// the main tagging/stats/export pipeline
-function mapParsedToTagPoints(parsedPoints, p1Name, p2Name) {
-  const p1Lower = (p1Name || "").toLowerCase();
-  const p2Lower = (p2Name || "").toLowerCase();
-
-  return parsedPoints.map((p, idx) => {
-    const t = p.tags || {};
-    // Determine server — alternate games based on point index (fallback)
-    // TODO: smarter server tracking from parsed data
-    const server = idx % 2 === 0 ? "p1" : "p2";
-    // Resolve point winner from parsed player name
-    let pointWinner = null;
-    if (p.pointWinner) {
-      const pw = p.pointWinner.toLowerCase();
-      if (pw.includes(p1Lower) || p1Lower.includes(pw)) pointWinner = "p1";
-      else if (pw.includes(p2Lower) || p2Lower.includes(pw)) pointWinner = "p2";
-    }
-    // Auto-fill winner from outcome for Ace/DF/RetErr/RetWin
-    if (!pointWinner) {
-      if (t.outcome === "Ace" || t.outcome === "Return Error") pointWinner = server;
-      else if (t.outcome === "Double Fault" || t.outcome === "Return Winner") pointWinner = server === "p1" ? "p2" : "p1";
-    }
-    // Map shotType into winningShot or errorShot based on outcome
-    let winningShot = null, errorShot = null;
-    if (t.shotType) {
-      if (t.outcome === "Winner") winningShot = t.shotType;
-      else if (t.outcome && t.outcome.includes("Error")) errorShot = t.shotType;
-    }
-    // Map direction to serve+1 or return+1 direction based on context
-    let sp1Dir = null, rp1Dir = null, servePlusOne = null, returnPlusOne = null;
-    if (t.shotContext === "serve+1") {
-      servePlusOne = t.shotType || null;
-      sp1Dir = t.direction || null;
-    } else if (t.shotContext === "return+1") {
-      returnPlusOne = t.shotType || null;
-      rp1Dir = t.direction || null;
-    }
-    return {
-      id: "audio_" + idx + "_" + Date.now(),
-      server: server,
-      serveType: t.serveType || null,
-      serveSpin: t.serveSpin || null,
-      serveZone: t.serveZone || null,
-      serveFault: t.serveFault || null,
-      serveSide: null, // will be auto-derived by rebuildScore
-      returnHand: t.returnHand || null,
-      returnPosition: t.returnPosition || null,
-      returnLandZone: null,
-      servePlusOne: servePlusOne,
-      sp1Dir: sp1Dir,
-      returnPlusOne: returnPlusOne,
-      rp1Dir: rp1Dir,
-      rallyLength: t.rallyLength || "0-4",
-      outcome: t.outcome || null,
-      errorShot: errorShot,
-      errorDirection: t.errorDirection || null,
-      shotType: winningShot || errorShot, // legacy field
-      winningShot: winningShot,
-      netApproach: t.netApproach && t.netApproach !== "?" ? t.netApproach : null,
-      pressurePoint: false,
-      pointWinner: pointWinner,
-      // Audio-specific metadata
-      _source: "audio",
-      _audioStartTime: p.startTime,
-      _audioEndTime: p.endTime,
-      _confidence: p.confidence,
-      _originalText: p.text,
-    };
-  });
-}
-
-// ─── TRANSCRIPTION RESULT MODAL ───────────────────────────────────────────────
-function TranscriptionResultModal({ recording, onClose, onImport, T = THEMES.original }) {
-  const [stage, setStage] = useState("ready");
-  const [progress, setProgress] = useState(0);
-  const [error, setError] = useState(null);
-  const [result, setResult] = useState(null);
-  const [parsedPoints, setParsedPoints] = useState([]);
-  const [reparseMsg, setReparseMsg] = useState(null);
-  const [showSetupForm, setShowSetupForm] = useState(false);
-
-  // Load cached transcript on mount (if exists)
-  useEffect(() => {
-    AudioStorage.get(recording.id).then(full => {
-      if (full && full.cachedTranscript) {
-        setResult(full.cachedTranscript);
-        const parsed = TennisVocabParser.parse(full.cachedTranscript, full.markers || []);
-        setParsedPoints(parsed.points);
-        setStage("done");
-      }
-    }).catch(() => {});
-  }, []);
-
-  const handleStart = async () => {
-    setStage("uploading");
-    setError(null);
-    try {
-      const full = await AudioStorage.get(recording.id);
-      if (!full || !full.blob) throw new Error("Recording data not found");
-      const transcript = await WhisperClient.transcribe(full.blob, TennisVocabParser.WHISPER_PROMPT, (p) => {
-        setStage(p.stage);
-        setProgress(p.percent || 0);
-      });
-      // Cache the transcript for free re-parsing
-      await AudioStorage.save({ ...full, cachedTranscript: transcript });
-      const parsed = TennisVocabParser.parse(transcript, full.markers || []);
-      setResult(transcript);
-      setParsedPoints(parsed.points);
-      setStage("done");
-    } catch(e) {
-      setError(e.message);
-      setStage("error");
-    }
-  };
-
-  const handleReparse = async () => { setReparseMsg("Re-parsing...");
-    if (!result) return;
-    const full = await AudioStorage.get(recording.id);
-    const parsed = TennisVocabParser.parse(result, full && full.markers || []);
-    setParsedPoints(parsed.points); setReparseMsg("✓ Re-parsed: " + parsed.points.length + " points"); setTimeout(() => setReparseMsg(null), 3000); };
-
-  const handleImport = () => setShowSetupForm(true);
-  const handleSetupConfirm = (formData) => {
-    setShowSetupForm(false);
-    onImport({ ...formData, parsedPoints: parsedPoints, recording: recording });
-  };
-
-  const fmtTime = (s) => { const m = Math.floor(s/60), sec = Math.floor(s%60); return m + ":" + String(sec).padStart(2,"0"); };
-
-  return React.createElement('div', { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },}
-    , React.createElement('div', { style: { background: T.card, borderRadius: 16, padding: 24, maxWidth: 800, width: "100%", maxHeight: "90vh", display: "flex", flexDirection: "column", border: "2px solid " + T.accent },}
-      , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },}
-        , React.createElement('div', null
-          , React.createElement('div', { style: { fontSize: 18, fontWeight: 900, color: T.text },}, "🤖 Transcribe & Tag")
-          , React.createElement('div', { style: { fontSize: 11, color: T.textMuted },}, recording.name, " · ", fmtTime(recording.duration))
-        )
-        , React.createElement('button', { onClick: onClose, style: { background: "transparent", border: "1px solid " + T.border, color: T.textMuted, borderRadius: 6, padding: "4px 10px", cursor: "pointer" },}, "✕")
-      )
-      , stage === "ready" && React.createElement('div', { style: { textAlign: "center", padding: 30 },}
-        , React.createElement('div', { style: { fontSize: 48, marginBottom: 12 },}, "🎤→🤖→🏷️")
-        , React.createElement('div', { style: { fontSize: 13, color: T.textMuted, marginBottom: 20, lineHeight: 1.6 },}
-          , "Whisper will transcribe this recording (~$" + (recording.duration / 60 * 0.006).toFixed(2) + " estimated cost).", React.createElement('br', null)
-          , "Then the tennis vocabulary parser will extract tagged points from the transcript."
-        )
-        , !WhisperClient.hasKey() && React.createElement('div', { style: { padding: "10px 14px", borderRadius: 8, background: DANGER + "15", border: "1px solid " + DANGER, color: DANGER, fontSize: 12, marginBottom: 16 },}, "⚠ No API key set. Open ⚙️ Settings first.")
-        , React.createElement('button', { onClick: handleStart, disabled: !WhisperClient.hasKey(), style: { padding: "14px 32px", borderRadius: 10, fontSize: 15, fontWeight: 800, cursor: WhisperClient.hasKey() ? "pointer" : "not-allowed", border: "2px solid #52c41a", background: "#52c41a25", color: "#52c41a", opacity: WhisperClient.hasKey() ? 1 : 0.4 },}, "🤖 Start Transcription")
-      )
-      , (stage === "uploading" || stage === "processing") && React.createElement('div', { style: { textAlign: "center", padding: 30 },}
-        , React.createElement('div', { style: { fontSize: 36, marginBottom: 12 },}, stage === "uploading" ? "📤" : "🤖")
-        , React.createElement('div', { style: { fontSize: 14, color: T.text, marginBottom: 16, fontWeight: 700 },}, stage === "uploading" ? "Uploading audio to OpenAI..." : "Whisper is transcribing... (this can take 1-3 minutes for long recordings)")
-        , React.createElement('div', { style: { height: 8, background: T.border, borderRadius: 4, overflow: "hidden", maxWidth: 400, margin: "0 auto" },}
-          , React.createElement('div', { style: { height: "100%", width: progress + "%", background: "#52c41a", transition: "width 0.3s" },})
-        )
-      )
-      , stage === "error" && React.createElement('div', { style: { padding: 20, background: DANGER + "15", border: "1px solid " + DANGER, borderRadius: 8, color: DANGER, fontSize: 13 },}, "⚠ " + error)
-      , stage === "done" && result && React.createElement('div', { style: { flex: 1, overflowY: "auto" },}
-        , React.createElement('div', { style: { padding: "10px 14px", background: "#52c41a15", border: "1px solid #52c41a", borderRadius: 8, color: "#52c41a", fontSize: 12, marginBottom: 12, fontWeight: 700 },}, "✓ Transcribed " + Math.round(result.duration || 0) + "s of audio · Extracted " + parsedPoints.length + " points")
-        , React.createElement('div', { style: { display: "flex", gap: 8, marginBottom: 12 },}
-          , parsedPoints.length > 0 && React.createElement('button', { onClick: handleImport, style: { flex: 1, padding: "12px 0", borderRadius: 10, fontSize: 14, fontWeight: 800, cursor: "pointer", border: "2px solid #52c41a", background: "#52c41a25", color: "#52c41a" },}, "📥 Import to Match (" + parsedPoints.length + ")")
-          , React.createElement('button', { onClick: handleReparse, style: { padding: "12px 16px", borderRadius: 10, fontSize: 13, fontWeight: 800, cursor: "pointer", border: "2px solid #5abaff", background: "#5abaff25", color: "#5abaff" },}, "🔄 Re-parse")
-        )
-
-        /* Full transcript viewer with copy/download */
-        , React.createElement('div', { style: { marginBottom: 16, padding: 12, background: T.bgDeep, borderRadius: 8, border: "1px solid " + T.border },}
-          , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 },}
-            , React.createElement('div', { style: { fontSize: 11, color: T.textMuted, fontWeight: 700, letterSpacing: 1 },}, "📄 FULL TRANSCRIPT (" + (result.text || "").length + " chars)")
-            , React.createElement('div', { style: { display: "flex", gap: 6 },}
-              , React.createElement('button', { onClick: () => {
-                navigator.clipboard.writeText(result.text || "").then(() => alert("Transcript copied to clipboard!")).catch(() => {
-                  // Fallback: select the textarea
-                  const ta = document.getElementById("transcript-area");
-                  if (ta) { ta.select(); document.execCommand("copy"); alert("Transcript copied!"); }
-                });
-              }, style: { padding: "4px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer", border: "1px solid " + T.accent, background: T.accent + "20", color: T.accent },}, "📋 Copy")
-              , React.createElement('button', { onClick: () => {
-                const blob = new Blob([result.text || ""], { type: "text/plain" });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = recording.name + "_transcript.txt";
-                a.click();
-                setTimeout(() => URL.revokeObjectURL(url), 1000);
-              }, style: { padding: "4px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer", border: "1px solid #5abaff", background: "#5abaff20", color: "#5abaff" },}, "⬇ Download .txt")
-              , React.createElement('button', { onClick: () => {
-                const json = JSON.stringify({ text: result.text, words: result.words, segments: result.segments, duration: result.duration }, null, 2);
-                const blob = new Blob([json], { type: "application/json" });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = recording.name + "_whisper.json";
-                a.click();
-                setTimeout(() => URL.revokeObjectURL(url), 1000);
-              }, style: { padding: "4px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer", border: "1px solid #f4d35e", background: "#f4d35e20", color: "#f4d35e" },}, "⬇ Download .json")
-            )
-          )
-          , React.createElement('textarea', { id: "transcript-area", readOnly: true, value: result.text || "", style: { width: "100%", minHeight: 120, maxHeight: 200, padding: 10, borderRadius: 6, border: "1px solid " + T.border, background: T.card, color: T.text, fontSize: 11, fontFamily: "monospace", boxSizing: "border-box", resize: "vertical" },})
-        )
-
-        , React.createElement('div', { style: { fontSize: 11, color: T.textMuted, fontWeight: 700, letterSpacing: 1, marginBottom: 6 },}, "EXTRACTED POINTS (" + parsedPoints.length + ")")
-        , parsedPoints.length === 0 ? React.createElement('div', { style: { padding: 16, background: T.bgDeep, borderRadius: 8, color: T.textMuted, fontSize: 12, textAlign: "center" },}, "No points extracted. Vocabulary may need expansion — check transcript above and share with developer.")
-        : parsedPoints.slice(0, 50).map(p => React.createElement('div', { key: p.id, style: { padding: "10px 14px", borderRadius: 8, border: "1px solid " + T.border, marginBottom: 6, background: T.card2 },}
-          , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },}
-            , React.createElement('div', { style: { fontSize: 11, fontWeight: 800, color: T.accent },}, "Point " + p.pointNum + " · " + fmtTime(p.startTime) + "→" + fmtTime(p.endTime))
-            , React.createElement('div', { style: { fontSize: 9, padding: "2px 6px", borderRadius: 4, background: p.confidence === "high" ? "#52c41a30" : p.confidence === "medium" ? "#f4d35e30" : DANGER + "30", color: p.confidence === "high" ? "#52c41a" : p.confidence === "medium" ? "#f4d35e" : DANGER, fontWeight: 700, textTransform: "uppercase" },}, p.confidence)
-          )
-          , React.createElement('div', { style: { fontSize: 11, color: T.textMuted, fontStyle: "italic", marginBottom: 6 },}, "\"" + p.text + "\"")
-          , Object.keys(p.tags).filter(k => !k.startsWith("_")).length === 0
-            ? React.createElement('div', { style: { fontSize: 10, color: DANGER, fontStyle: "italic" },}, "⚠ No tags matched — vocabulary needs expansion")
-            : React.createElement('div', { style: { display: "flex", flexWrap: "wrap", gap: 4 },}
-                , Object.entries(p.tags).filter(([k]) => !k.startsWith("_")).map(([k, v]) => React.createElement('span', { key: k, style: { fontSize: 10, padding: "2px 8px", borderRadius: 4, background: T.accent + "20", color: T.accent, fontWeight: 700 },}, k + ": " + v))
-              )
-        ))
-        , parsedPoints.length > 50 && React.createElement('div', { style: { fontSize: 10, color: T.textMuted, textAlign: "center", padding: 10 },}, "Showing first 50 of " + parsedPoints.length + " points")
-      )
-    )
-  );
-}
-
 
 // ─── VOICE TAGGING ENGINE ─────────────────────────────────────────────────────
 // Uses Web Speech API (webkitSpeechRecognition) for hands-free courtside tagging.
@@ -4655,6 +3810,8 @@ const VoiceEngine = {
     if (has("tee") || text === "t" || (has("center") && has("serve")) || has("middle")) return { action: "setZone", zone: "T" };
 
     // ── Shot types (context-aware: error vs winner) ──
+    if (has("drop") && has("forehand")) return { action: "setShot", shot: "Drop Shot Forehand" };
+    if (has("drop") && has("backhand")) return { action: "setShot", shot: "Drop Shot Backhand" };
     if (has("forehand") && has("volley")) return { action: "setShot", shot: "Volley Forehand" };
     if (has("backhand") && has("volley")) return { action: "setShot", shot: "Volley Backhand" };
     if (has("slice") && has("forehand")) return { action: "setShot", shot: "Slice Forehand" };
@@ -4746,7 +3903,6 @@ function App() {
   const [points, setPoints] = useState([]);
   const [score, setScore] = useState(null);
   const [superTieAt11, setSuperTieAt11] = useState(false);
-  const [initialServer, setInitialServer] = useState("p1"); // who serves the very first point of the match
   const [showSuperTieModal, setShowSuperTieModal] = useState(false);
   const [matchTime, setMatchTime] = useState({ start: null, end: null });
   const [conditions, setConditions] = useState("");
@@ -4874,28 +4030,13 @@ function App() {
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
   }, [points, score, matchTime, conditions, themeId, setup, superTieAt11, courtFlipped, tag, cloudUser]);
 
-  const handleImportAudioMatch = (data) => {
-    const setupData = { player1: data.p1Name, player2: data.p2Name, surface: data.surface, format: data.format, date: data.date, tournament: data.tournament, conditions: data.conditions, p1utr: data.p1utr, p2utr: data.p2utr, p1hand: data.p1hand, p2hand: data.p2hand };
-    const tagPoints = mapParsedToTagPoints(data.parsedPoints, data.p1Name, data.p2Name);
-    setSetup(setupData);
-    setConditions(setupData.conditions);
-    setSuperTieAt11(data.superTie || false);
-    setPoints(tagPoints);
-    setScore(rebuildScore(tagPoints, setupData.format, false));
-    setMatchTime({ start: Date.now(), end: null, pausedMs: 0, pausedAt: null });
-    setTag(EMPTY_TAG);
-    setTranscribingRec(null);
-    setTab('stats');
-  };
-
   const handleStart = (form) => {
     localStorage.removeItem("tennistag_session");
     setSetup(form);
     setConditions(form.conditions || "");
     setSuperTieAt11(false);
     setShowSuperTieModal(false);
-    setInitialServer("p1"); // Reset to default — user can swap after setup
-    setScore(rebuildScore([], form.format, false, "p1"));
+    setScore(rebuildScore([], form.format, false));
     setPoints([]);
     setMatchTime({ start: Date.now(), end: null, pausedMs: 0, pausedAt: null });
     setTag(EMPTY_TAG);
@@ -4914,22 +4055,20 @@ function App() {
     if (!autoW) return; // still need a point winner
     // ── Auto-detect pressure point from current score ──
     const autoPressure = detectPressurePoint(score, setup.format);
-    const autoPressureType = detectPressurePointType(score, setup.format);
     const newPoint = {
       ...tag,
       id: Date.now() + "-" + points.length,
       timestamp: Date.now(),
       server: srv,
-      serveSide: deriveServeSide(score.points),
+      serveSide: deriveServeSide(score),
       pointWinner: autoW,
       rallyLength: autoR,
       pressurePoint: tag.pressurePoint || autoPressure,
-      pressurePointType: autoPressureType,
       // Map relative return zone → absolute court position
       returnLandAbsolute: (function() {
         const rz = tag.returnLandZone;
         if (!rz || rz === "Net") return rz || "";
-        const side = deriveServeSide(score.points);
+        const side = deriveServeSide(score);
         const isDeuce = side === "Deuce";
         // Relative: Cross/Down-line/Centre × Deep/Mid
         // Absolute: Deuce-side/Ad-side/Centre × Deep/Mid
@@ -4955,21 +4094,18 @@ function App() {
         superTieBreak: score.superTieBreak || false,
       },
     };
-    // Use functional setter so we always operate on fresh state (critical after edits)
-    setPoints(prev => {
-      const updated = [...prev, newPoint];
-      const newScore = rebuildScore(updated, setup.format, superTieAt11, initialServer);
-      setScore(newScore);
-      // Detect 1-1 for super tie-break prompt
-      if (canTriggerSuperTie(setup.format) && !superTieAt11 && !showSuperTieModal) {
-        const p1sets = newScore.sets.filter((st, i) => i < newScore.currentSet && st.p1 > st.p2).length;
-        const p2sets = newScore.sets.filter((st, i) => i < newScore.currentSet && st.p2 > st.p1).length;
-        if (p1sets === 1 && p2sets === 1 && newScore.currentSet === 2 && !newScore.matchWinner) {
-          setShowSuperTieModal(true);
-        }
+    const newPoints = [...points, newPoint];
+    setPoints(newPoints);
+    const newScore = rebuildScore(newPoints, setup.format, superTieAt11);
+    setScore(newScore);
+    // Detect 1-1: if a new set just started and it's the 3rd set, prompt for super tie-break
+    if (canTriggerSuperTie(setup.format) && !superTieAt11 && !showSuperTieModal) {
+      const p1sets = newScore.sets.filter((st, i) => i < newScore.currentSet && st.p1 > st.p2).length;
+      const p2sets = newScore.sets.filter((st, i) => i < newScore.currentSet && st.p2 > st.p1).length;
+      if (p1sets === 1 && p2sets === 1 && newScore.currentSet === 2 && !newScore.matchWinner) {
+        setShowSuperTieModal(true);
       }
-      return updated;
-    });
+    }
     setTag({ ...EMPTY_TAG, serveType: "1st Serve" });
     // Haptic feedback (iPad) + visual flash
     if (navigator.vibrate) navigator.vibrate(50);
@@ -4988,7 +4124,7 @@ function App() {
     setSuperTieAt11(useSuperTie);
     setShowSuperTieModal(false);
     // Rebuild score with the new super tie decision
-    setScore(rebuildScore(points, setup.format, useSuperTie, initialServer));
+    setScore(rebuildScore(points, setup.format, useSuperTie));
   };
 
   const [undoStack, setUndoStack] = useState([]);
@@ -5007,34 +4143,28 @@ function App() {
     clearTimeout(undoTimerRef.current);
     setUndoPending(false);
     const removed = points[points.length - 1];
-    setPoints(prev => {
-      const np = prev.slice(0, -1);
-      setScore(rebuildScore(np, setup.format, superTieAt11, initialServer));
-      return np;
-    });
+    const np = points.slice(0, -1);
+    setPoints(np);
+    setScore(rebuildScore(np, setup.format, superTieAt11));
     setUndoStack(prev => [...prev.slice(-4), removed]); // keep last 5
   };
 
   const handleRedo = () => {
     if (!undoStack.length) return;
     const restored = undoStack[undoStack.length - 1];
-    setPoints(prev => {
-      const np = [...prev, restored];
-      setScore(rebuildScore(np, setup.format, superTieAt11, initialServer));
-      return np;
-    });
+    const np = [...points, restored];
+    setPoints(np);
+    setScore(rebuildScore(np, setup.format, superTieAt11));
     setUndoStack(prev => prev.slice(0, -1));
   };
 
   const handleEditLast = () => {
     if (!points.length) return;
     const lastPoint = points[points.length - 1];
-    // Remove last point and rebuild score — use functional setter for consistency
-    setPoints(prev => {
-      const np = prev.slice(0, -1);
-      setScore(rebuildScore(np, setup.format, superTieAt11, initialServer));
-      return np;
-    });
+    // Remove last point and rebuild score
+    const np = points.slice(0, -1);
+    setPoints(np);
+    setScore(rebuildScore(np, setup.format, superTieAt11));
     // Load the point's tag data back into the form for editing
     setTag({
       serveType: lastPoint.serveType || null,
@@ -5048,8 +4178,10 @@ function App() {
       returnLandZone: lastPoint.returnLandZone || null,
       servePlusOne: lastPoint.servePlusOne || null,
       sp1Dir: lastPoint.sp1Dir || null,
+      sp1Result: lastPoint.sp1Result || null,
       returnPlusOne: lastPoint.returnPlusOne || null,
       rp1Dir: lastPoint.rp1Dir || null,
+      rp1Result: lastPoint.rp1Result || null,
       rallyLength: lastPoint.rallyLength || null,
       outcome: lastPoint.outcome || null,
       shotType: lastPoint.shotType || null,
@@ -5063,65 +4195,30 @@ function App() {
   };
 
   const handleOverwriteApply = (correctedScore) => {
-    // Insert a synthetic "correction" ghost point that snaps the score to the corrected state.
-    // This persists through subsequent rebuildScore() calls because the snapshot lives inside the points array.
-    const ghost = {
-      _isCorrection: true,
-      _snapshot: {
-        sets: correctedScore.sets,
-        games: correctedScore.games,
-        points: correctedScore.points,
-        currentSet: correctedScore.currentSet,
-        server: correctedScore.server,
-        tieBreak: correctedScore.tieBreak,
-        superTieBreak: correctedScore.superTieBreak,
-        tieBreakPts: correctedScore.tieBreakPts,
-        tieBreakServer: correctedScore.tieBreakServer,
-      },
-      id: "correction-" + Date.now(),
-      timestamp: Date.now(),
-      // Stored for log display
-      _correctionLabel: "Score corrected to " + correctedScore.points.p1 + "-" + correctedScore.points.p2,
-      // Empty fields so it doesn't interfere with stats functions that look at these
-      server: correctedScore.server,
-      pointWinner: null,
-      outcome: null,
-    };
-    setPoints(prev => {
-      const updated = [...prev, ghost];
-      const newScore = rebuildScore(updated, setup.format, superTieAt11, initialServer);
-      setScore(newScore);
-      return updated;
-    });
+    setScore(correctedScore);
     setShowOverwrite(false);
   };
 
   const handleServerSwap = (newServer) => {
     if (!score || score.matchWinner) return;
-    // Persist the initial server choice so rebuildScore respects it going forward.
-    // This works correctly when swap happens BEFORE any points are played,
-    // or when no games have been completed yet.
-    if (points.length === 0) {
-      // Pre-match swap — just update the initial server
-      setInitialServer(newServer);
-      setScore(prev => ({ ...prev, server: newServer, tieBreakServer: newServer }));
-      return;
-    }
-    // Mid-match swap — figure out which initialServer value would produce this server now
-    // Count completed games so far to determine the parity
-    const completedGames = (score.games.p1 || 0) + (score.games.p2 || 0) +
-      score.sets.slice(0, score.currentSet).reduce((sum, s) => sum + (s.p1 || 0) + (s.p2 || 0), 0);
-    // After N completed games, server has flipped N times from initialServer
-    // So if we want `newServer` to be serving now after N flips, initialServer should be:
-    //   (N even) → newServer
-    //   (N odd) → opposite of newServer
-    const desiredInitial = (completedGames % 2 === 0) ? newServer : (newServer === "p1" ? "p2" : "p1");
-    setInitialServer(desiredInitial);
-    // Rebuild the score with the new initial server so everything is consistent
-    setScore(rebuildScore(points, setup.format, superTieAt11, desiredInitial));
+    setScore(prev => ({ ...prev, server: newServer }));
   };
 
   const [showEndConfirm, setShowEndConfirm] = useState(false);
+  const [showTimeModal, setShowTimeModal] = useState(false);
+  const applyMatchTimes = (t) => {
+    setMatchTime(prev => ({ ...prev, start: t.start, end: t.end, pausedMs: 0, pausedAt: null }));
+    // keep saved history in step if this match is already there
+    try {
+      const raw = localStorage.getItem("tennistag_history");
+      if (raw) {
+        const h = JSON.parse(raw);
+        const i = h.findIndex(m => m.matchTime && m.matchTime.end === matchTime.end && m.setup && m.setup.player1 === setup.player1 && m.setup.date === setup.date);
+        if (i >= 0) { h[i].matchTime = { start: t.start, end: t.end }; localStorage.setItem("tennistag_history", JSON.stringify(h)); }
+      }
+    } catch(e) {}
+    setShowTimeModal(false);
+  };
 
   const handleEndMatch = () => setShowEndConfirm(true);
 
@@ -5138,9 +4235,10 @@ function App() {
     });
   };
 
-  const confirmEndMatch = () => {
-    const endTime = matchTime.end || Date.now();
-    if (!matchTime.end) setMatchTime(prev => ({ ...prev, end: endTime }));
+  const confirmEndMatch = (times) => {
+    const startTime = (times && times.start) || matchTime.start || Date.now();
+    const endTime = (times && times.end) || matchTime.end || Date.now();
+    setMatchTime(prev => ({ ...prev, start: startTime, end: endTime, pausedMs: 0, pausedAt: null }));
     setShowEndConfirm(false);
     setTab("stats");
     // Save to local match history
@@ -5152,7 +4250,7 @@ function App() {
         setup: setup,
         pointCount: points.length,
         score: score,
-        matchTime: { start: matchTime.start, end: endTime },
+        matchTime: { start: startTime, end: endTime },
         conditions: conditions,
         savedAt: endTime,
         matchComplete: true,
@@ -5164,17 +4262,13 @@ function App() {
     if (CLOUD_ENABLED) {
       CloudStorage.saveMatch({
         setup, points, score,
-        matchTime: { start: matchTime.start, end: endTime },
+        matchTime: { start: startTime, end: endTime },
         conditions, themeId,
       });
     }
   };
 
   const [showHistory, setShowHistory] = useState(false);
-  const [showAudioRecorder, setShowAudioRecorder] = useState(false);
-  const [showLibrary, setShowLibrary] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
-  const [transcribingRec, setTranscribingRec] = useState(null);
 
   // ── KEYBOARD SHORTCUTS ─────────────────────────────────────────
   useEffect(() => {
@@ -5382,14 +4476,6 @@ function App() {
           T: T,}
         )
       )
-      /* Audio recorder modal */
-      , showAudioRecorder && React.createElement(MatchAudioRecorder, { onClose: () => setShowAudioRecorder(false), T: T,})
-      /* Recordings library modal */
-      , showLibrary && React.createElement(RecordingsLibraryModal, { onClose: () => setShowLibrary(false), onTranscribe: (r) => { setTranscribingRec(r); setShowLibrary(false); }, T: T,})
-      /* Settings modal */
-      , showSettings && React.createElement(SettingsModal, { onClose: () => setShowSettings(false), T: T,})
-      /* Transcription result modal */
-      , transcribingRec && React.createElement(TranscriptionResultModal, { recording: transcribingRec, onClose: () => setTranscribingRec(null), onImport: handleImportAudioMatch, T: T,})
       /* Match history modal */
       , showHistory && (
         React.createElement(MatchHistoryModal, {
@@ -5427,18 +4513,6 @@ function App() {
               cursor: "pointer", border: "1px solid " + T.border, background: "transparent",
               color: T.textMuted, fontFamily: T.fontBody },}, "Sign Out")
           )
-          , React.createElement('button', { onClick: () => setShowAudioRecorder(true), style: {
-            padding: "5px 12px", borderRadius: T.chipRadius || 8, fontSize: 11, fontWeight: 700,
-            cursor: "pointer", border: "1px solid #e63946", background: "#e6394615",
-            color: "#e63946", fontFamily: T.fontBody },}, "🎙️ Record Audio")
-          , React.createElement('button', { onClick: () => setShowLibrary(true), style: {
-            padding: "5px 12px", borderRadius: T.chipRadius || 8, fontSize: 11, fontWeight: 700,
-            cursor: "pointer", border: "1px solid #52c41a", background: "#52c41a15",
-            color: "#52c41a", fontFamily: T.fontBody },}, "🎵 Library")
-          , React.createElement('button', { onClick: () => setShowSettings(true), style: {
-            padding: "5px 10px", borderRadius: T.chipRadius || 8, fontSize: 11, fontWeight: 700,
-            cursor: "pointer", border: "1px solid " + T.border, background: T.card2,
-            color: T.textMuted, fontFamily: T.fontBody },}, "⚙️")
           , React.createElement('button', { onClick: () => setShowHistory(true), style: {
             padding: "5px 12px", borderRadius: T.chipRadius || 8, fontSize: 11, fontWeight: 700,
             cursor: "pointer", border: "1px solid " + T.border, background: T.card2,
@@ -5503,6 +4577,9 @@ function App() {
           onCancel: () => setShowEndConfirm(false),
           T: T,}
         )
+      )
+      , showTimeModal && (
+        React.createElement(MatchTimeModal, { matchTime: matchTime, onApply: applyMatchTimes, onClose: () => setShowTimeModal(false), T: T,} )
       )
 
       /* Score Overwrite modal */
@@ -5583,8 +4660,8 @@ function App() {
               , React.createElement('div', { style: { padding: "7px 10px", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 },}
                 , React.createElement('span', { style: { ...s.sectionLabel, marginBottom: 0 },}, "Recent Points" )
               )
-              , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "20px 60px 40px 34px 40px 40px 60px 60px 18px 18px", gap: 3, padding: "4px 5px 4px 15px", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 },}
-                , ["#","Server","Type","Dir","Ret/Flt","Rally","Outcome","Winner","🔝","🔴"].map(h => (
+              , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "20px 60px 34px 48px 40px 34px 40px 40px 60px 60px 18px 18px", gap: 3, padding: "4px 5px 4px 15px", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 },}
+                , ["#","Server","Games","Score","Type","Dir","Ret/Flt","Rally","Outcome","Winner","🔝","🔴"].map(h => (
                   React.createElement('span', { key: h, style: { fontSize: 9, color: MUTED, fontWeight: 700 },}, h)
                 ))
               )
@@ -5598,29 +4675,26 @@ function App() {
             , React.createElement('div', { style: { padding: "7px 10px", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 },}
               , React.createElement('span', { style: { ...s.sectionLabel, marginBottom: 0 },}, "Full Point Log — "    , points.length, " pts" )
             )
-            , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "24px 80px 44px 38px 44px 56px 52px 40px 40px 40px 42px 62px 75px 20px 20px", gap: 2, padding: "4px 8px", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 },}
-              , ["#","Server","Serve","Spin","Side","Zone","Fault","RH","Srv+1","Ret+1","Rally","Outcome","Winner","🔝","🔴"].map(h => (
+            , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "24px 80px 36px 52px 44px 38px 44px 56px 52px 40px 40px 40px 42px 62px 75px 20px 20px", gap: 2, padding: "4px 8px", borderBottom: `1px solid #1e3a5f`, flexShrink: 0 },}
+              , ["#","Server","Games","Score","Serve","Spin","Side","Zone","Fault","RH","Srv+1","Ret+1","Rally","Outcome","Winner","🔝","🔴"].map(h => (
                 React.createElement('span', { key: h, style: { fontSize: 8, color: MUTED, fontWeight: 700 },}, h)
               ))
             )
             , React.createElement('div', { style: { flex: 1, overflowY: "auto", padding: "3px 8px" },}
               , [...points].reverse().map((p, i) => (
-                p._isCorrection
-                  ? React.createElement('div', { key: p.id, style: { padding: "6px 10px", marginBottom: 2, borderRadius: 5, background: "#5abaff15", border: "1px solid #5abaff40", fontSize: 11, color: "#5abaff", fontWeight: 700, display: "flex", alignItems: "center", gap: 8 },}
-                      , React.createElement('span', null, "📝")
-                      , React.createElement('span', { style: { flex: 1 },}, p._correctionLabel || "Score corrected")
-                    )
-                  : React.createElement('div', { key: p.id, style: { display: "grid", gridTemplateColumns: "24px 80px 44px 38px 44px 56px 52px 40px 40px 40px 42px 62px 75px 20px 20px", gap: 2, alignItems: "center", padding: "5px 0", borderBottom: `1px solid #1e3a5f18`, fontSize: 10, color: MUTED },}
+                React.createElement('div', { key: p.id, style: { display: "grid", gridTemplateColumns: "24px 80px 36px 52px 44px 38px 44px 56px 52px 40px 40px 40px 42px 62px 75px 20px 20px", gap: 2, alignItems: "center", padding: "5px 0", borderBottom: `1px solid #1e3a5f18`, fontSize: 10, color: MUTED },}
                   , React.createElement('span', { style: { color: ACCENT, fontWeight: 700 },}, points.length - i)
                   , React.createElement('span', { style: { color: WHITE, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },}, p.server === "p1" ? setup.player1 : setup.player2)
+                  , React.createElement('span', { style: { color: "#b0d0e8", fontWeight: 700 },}, snapGames(p))
+                  , React.createElement('span', { style: { color: ACCENT, fontWeight: 700 },}, snapPoints(p))
                   , React.createElement('span', null, _optionalChain([p, 'access', _11 => _11.serveType, 'optionalAccess', _12 => _12.replace, 'call', _13 => _13(" Serve","")]) || "—")
                   , React.createElement('span', { style: { fontSize: 9 },}, p.serveSpin || "—")
                   , React.createElement('span', null, p.serveSide ? p.serveSide.slice(0,1) : "—")
                   , React.createElement('span', { style: { fontSize: 9 },}, p.serveZone || "—")
                   , React.createElement('span', { style: { color: p.serveFault && p.serveFault !== "?" ? DANGER : MUTED, fontSize: 9 },}, p.serveFault && p.serveFault !== "?" ? p.serveFault : "—")
-                  , React.createElement('span', null, p.returnHand ? p.returnHand.slice(0,2) : "—")
-                  , React.createElement('span', null, p.servePlusOne ? p.servePlusOne.slice(0,2) : "—")
-                  , React.createElement('span', null, p.returnPlusOne ? p.returnPlusOne.slice(0,2) : "—")
+                  , React.createElement('span', null, p.returnHand ? shotAbbr(p.returnHand) : "—")
+                  , React.createElement('span', { style: { color: p.sp1Result === "Winner" ? "#52c41a" : p.sp1Result === "Error" ? DANGER : MUTED },}, p.servePlusOne ? shotAbbr(p.servePlusOne) + (p.sp1Result === "Winner" ? "✓" : p.sp1Result === "Error" ? "✗" : "") : "—")
+                  , React.createElement('span', { style: { color: p.rp1Result === "Winner" ? "#52c41a" : p.rp1Result === "Error" ? DANGER : MUTED },}, p.returnPlusOne ? shotAbbr(p.returnPlusOne) + (p.rp1Result === "Winner" ? "✓" : p.rp1Result === "Error" ? "✗" : "") : "—")
                   , React.createElement('span', null, p.rallyLength || "—")
                   , React.createElement('span', { style: { color: p.outcome === "Winner" || p.outcome === "Ace" ? "#52c41a" : _optionalChain([p, 'access', _14 => _14.outcome, 'optionalAccess', _15 => _15.includes, 'call', _16 => _16("Error")]) || p.outcome === "Double Fault" ? DANGER : MUTED, fontSize: 9 },}
                     , p.outcome ? (p.errorShot ? p.outcome.includes("Un") ? "UE" : "FE" + "-" + p.errorShot.slice(0,3) : p.outcome.slice(0,8)) : "—"
@@ -5639,7 +4713,7 @@ function App() {
 
         , tab === "stats" && (
           React.createElement('div', { style: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },}
-            , React.createElement(StatsScreen, { points: points, setup: effectiveSetup, score: score, matchTime: matchTime,} )
+            , React.createElement(StatsScreen, { points: points, setup: effectiveSetup, score: score, matchTime: matchTime, onEditTimes: () => setShowTimeModal(true),} )
             , React.createElement('div', { style: { ...s.exportBar, flexDirection: "column", gap: 6 },}
               /* Return to match row — only if match not ended */
               , !matchTime.end && (
